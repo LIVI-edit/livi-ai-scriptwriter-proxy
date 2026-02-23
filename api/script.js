@@ -10,7 +10,7 @@ module.exports = async (req, res) => {
   try {
     // Иногда body приходит строкой — подстрахуемся
     const body = typeof req.body === "string" ? JSON.parse(req.body) : (req.body || {});
-    const { message, persona } = body;
+   const { message, persona, mode, messages } = body;
 
     if (!message || typeof message !== "string") {
       return res.status(400).json({ error: "Missing 'message' string" });
@@ -27,6 +27,40 @@ module.exports = async (req, res) => {
     };
 
     const system = personaPrompts[persona] || personaPrompts.director;
+    const safeMessages = Array.isArray(messages) ? messages.slice(-20) : [];
+const userMessage = (typeof message === "string" && message.trim()) ? message.trim() : null;
+
+const buildInstruction = `
+Собери финальный результат в формате LiVi.
+
+1) SCENES — список сцен (id, название, 1–2 строки что происходит, примерная длительность).
+2) CHOICES — где выбор и какие варианты.
+3) TRANSITIONS — как переходить (буфер/переходный клип/продолжение).
+4) PROMPTS — 3–6 готовых промптов для генерации видео/шотов (универсально).
+5) JSON — в конце один валидный JSON:
+{ scenes:[], choices:[], transitions:[], prompts:[] }
+
+НЕ добавляй лишних объяснений. Если данных не хватает — задай ровно 2 уточняющих вопроса вместо сборки.
+`.trim();
+
+let input = [{ role: "system", content: system }];
+
+for (const m of safeMessages) {
+  if (!m || typeof m !== "object") continue;
+  if (!["user", "assistant"].includes(m.role)) continue;
+  if (typeof m.content !== "string") continue;
+  input.push({ role: m.role, content: m.content });
+}
+
+if (userMessage) input.push({ role: "user", content: userMessage });
+
+if ((mode || "").toLowerCase() === "build") {
+  input.push({ role: "user", content: buildInstruction });
+}
+
+if (input.length < 2) {
+  return res.status(400).json({ error: "No input provided" });
+}
 
     const r = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
@@ -36,10 +70,7 @@ module.exports = async (req, res) => {
       },
       body: JSON.stringify({
         model: "gpt-4.1-mini",
-        input: [
-          { role: "system", content: system },
-          { role: "user", content: message }
-        ],
+        input,
         max_output_tokens: 350
       }),
     });

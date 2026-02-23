@@ -126,15 +126,21 @@ if (input.length < 2) {
             .map((c) => c.text)
             .join("\n")
         : "");
-    let export_json = null;
+ let export_json = null;
 const marker = "===EXPORT_JSON===";
 
 if (typeof text === "string" && text.includes(marker)) {
-  const jsonPart = text.split(marker)[1].trim();
-  try {
-    export_json = JSON.parse(jsonPart);
-  } catch (e) {
-    export_json = null;
+  const afterMarker = text.split(marker)[1] || "";
+  const start = afterMarker.indexOf("{");
+  const end = afterMarker.lastIndexOf("}");
+
+  if (start !== -1 && end !== -1 && end > start) {
+    const jsonCandidate = afterMarker.slice(start, end + 1).trim();
+    try {
+      export_json = JSON.parse(jsonCandidate);
+    } catch (e) {
+      export_json = null;
+    }
   }
 }
 

@@ -138,7 +138,7 @@ if (typeof text === "string" && text.includes(marker)) {
   }
 }
 
-    return res.status(200).json({ ok: true, persona: persona || "director", text });
+    return res.status(200).json({ ok: true, persona: persona || "director", text, export_json });
   } catch (e) {
     return res.status(500).json({ error: "Server error", details: String(e) });
   }

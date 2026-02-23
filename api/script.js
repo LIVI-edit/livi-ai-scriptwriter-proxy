@@ -1,5 +1,17 @@
-try {
-    const { message, persona } = req.body || {};
+module.exports = async (req, res) => {
+  // CORS (чтобы запросы из браузера не блокировались)
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+
+  if (req.method === "OPTIONS") return res.status(200).end();
+  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+
+  try {
+    // Иногда body приходит строкой — подстрахуемся
+    const body = typeof req.body === "string" ? JSON.parse(req.body) : (req.body || {});
+    const { message, persona } = body;
+
     if (!message || typeof message !== "string") {
       return res.status(400).json({ error: "Missing 'message' string" });
     }
@@ -26,9 +38,9 @@ try {
         model: "gpt-4.1-mini",
         input: [
           { role: "system", content: system },
-          { role: "user", content: message },
+          { role: "user", content: message }
         ],
-        max_output_tokens: 350,
+        max_output_tokens: 350
       }),
     });
 
@@ -39,6 +51,7 @@ try {
 
     const data = await r.json();
 
+    // Достаём итоговый текст
     const text =
       data.output_text ||
       (Array.isArray(data.output)
@@ -53,4 +66,4 @@ try {
   } catch (e) {
     return res.status(500).json({ error: "Server error", details: String(e) });
   }
-}
+};

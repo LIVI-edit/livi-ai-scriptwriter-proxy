@@ -63,18 +63,6 @@ const buildInstruction = `
 5) PROMPTS  
 6–8 готовых промптов для генерации видео.
 
-6) JSON  
-Перед JSON выведи строку:
-===EXPORT_JSON===
-Затем выведи один валидный JSON:
-{
-  scenes:[],
-  choices:[],
-  transitions:[],
-  style:"",
-  prompts:[]
-}
-
 Если данных достаточно — НЕ задавай вопросов. Сразу собирай структуру.
 `.trim();
 let input = [{ role: "system", content: system }];

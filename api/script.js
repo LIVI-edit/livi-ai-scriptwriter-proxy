@@ -126,6 +126,17 @@ if (input.length < 2) {
             .map((c) => c.text)
             .join("\n")
         : "");
+    let export_json = null;
+const marker = "===EXPORT_JSON===";
+
+if (typeof text === "string" && text.includes(marker)) {
+  const jsonPart = text.split(marker)[1].trim();
+  try {
+    export_json = JSON.parse(jsonPart);
+  } catch (e) {
+    export_json = null;
+  }
+}
 
     return res.status(200).json({ ok: true, persona: persona || "director", text });
   } catch (e) {

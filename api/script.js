@@ -12,12 +12,17 @@ module.exports = async (req, res) => {
     const body = typeof req.body === "string" ? JSON.parse(req.body) : (req.body || {});
    const { message, persona, mode, messages } = body;
 
-    if (!message || typeof message !== "string") {
-      return res.status(400).json({ error: "Missing 'message' string" });
-    }
-    if (message.length > 2000) {
-      return res.status(400).json({ error: "Message too long (max 2000 chars)" });
-    }
+  const modeLower = (mode || "chat").toLowerCase();
+
+// message обязателен только в режиме chat
+if (modeLower !== "build") {
+  if (!message || typeof message !== "string") {
+    return res.status(400).json({ error: "Missing 'message' string" });
+  }
+  if (message.length > 2000) {
+    return res.status(400).json({ error: "Message too long (max 2000 chars)" });
+  }
+}
 
     const personaPrompts = {
       director:

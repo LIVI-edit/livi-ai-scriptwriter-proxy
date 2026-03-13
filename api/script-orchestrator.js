@@ -1,137 +1,191 @@
+
 import OpenAI from "openai";
+import validator from "./aiResponseValidator.js";
 
 const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
 
-export default async function handler(req, res) {
+function getUserPayloadText(payload) {
+  try {
+    return JSON.stringify(payload || {}, null, 2);
+  } catch (_) {
+    return "{}";
+  }
+}
 
+async function runOpenAI({ system, user, temperature = 0.7 }) {
+  const completion = await client.chat.completions.create({
+    model: "gpt-4o-mini",
+    temperature,
+    response_format: { type: "json_object" },
+    messages: [
+      { role: "system", content: system },
+      { role: "user", content: user }
+    ]
+  });
+
+  return String(completion?.choices?.[0]?.message?.content || "").trim();
+}
+
+export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
   try {
-
     const body = req.body || {};
-    const action = body.action || "SCENE_IDEAS";
+    const action = String(body.action || "SCENE_IDEAS").trim().toUpperCase();
     const payload = body.payload || {};
 
-    // ===== SCENE IDEAS =====
-
     if (action === "SCENE_IDEAS") {
-
-      const prompt = `
-Create 3 cinematic scene ideas.
+      const raw = await runOpenAI({
+        system: "You are a cinematic scene generator for LiVi AI Scriptwriter. Return valid JSON only.",
+        user: `Create 3 cinematic scene ideas based on this payload.
 
 Return JSON only:
-
 {
- "ideas":[
-  {
-   "id":"exact",
-   "short_title":"...",
-   "scene_text":"...",
-   "why_it_works":"..."
-  }
- ]
+  "ideas": [
+    {
+      "id": "exact",
+      "short_title": "...",
+      "scene_text": "...",
+      "why_it_works": "..."
+    },
+    {
+      "id": "variation",
+      "short_title": "...",
+      "scene_text": "...",
+      "why_it_works": "..."
+    },
+    {
+      "id": "creative",
+      "short_title": "...",
+      "scene_text": "...",
+      "why_it_works": "..."
+    }
+  ]
 }
-`;
 
-      const completion = await client.chat.completions.create({
-        model: "gpt-4o-mini",
-        temperature: 0.8,
-        messages: [
-          { role: "system", content: "You are a cinematic scene generator." },
-          { role: "user", content: prompt }
-        ]
+Payload:
+${getUserPayloadText(payload)}`
       });
 
-      const text = completion.choices[0].message.content;
+      const checked = validator.validateByAction("SCENE_IDEAS", raw);
+
+      if (!checked.ok) {
+        return res.status(422).json({
+          error: "Invalid AI response",
+          action,
+          details: checked.errors,
+          raw
+        });
+      }
 
       return res.json({
         ok: true,
-        action: "SCENE_IDEAS",
-        data: JSON.parse(text)
+        action,
+        data: checked.data,
+        raw
       });
     }
-
-    // ===== REFINEMENT =====
 
     if (action === "REFINEMENT") {
+      const raw = await runOpenAI({
+        system: "You refine cinematic scenes for LiVi AI Scriptwriter. Return valid JSON only.",
+        user: `Refine the scene using the payload.
 
-      const prompt = `
-Ask 1 short clarification question to improve the scene.
-
-Return JSON:
-
+Return JSON only:
 {
- "question":"..."
+  "patch": {
+    "scene_core.main_focus": "...",
+    "environment.location": "...",
+    "visual_direction.atmosphere": "..."
+  },
+  "questions": ["..."],
+  "ready_hint": false
 }
-`;
 
-      const completion = await client.chat.completions.create({
-        model: "gpt-4o-mini",
-        temperature: 0.6,
-        messages: [
-          { role: "system", content: "You refine cinematic scenes." },
-          { role: "user", content: prompt }
-        ]
+Rules:
+- patch must contain only updated fields
+- questions must be short
+- return JSON only
+
+Payload:
+${getUserPayloadText(payload)}`,
+        temperature: 0.6
       });
 
-      const text = completion.choices[0].message.content;
+      const checked = validator.validateByAction("REFINEMENT", raw);
+
+      if (!checked.ok) {
+        return res.status(422).json({
+          error: "Invalid AI response",
+          action,
+          details: checked.errors,
+          raw
+        });
+      }
 
       return res.json({
         ok: true,
-        action: "REFINEMENT",
-        data: JSON.parse(text)
+        action,
+        data: checked.data,
+        raw
       });
     }
 
-    // ===== FINAL ASSEMBLY =====
-
     if (action === "FINAL_ASSEMBLY") {
+      const raw = await runOpenAI({
+        system: "You assemble final structured output for LiVi AI Scriptwriter. Return valid JSON only.",
+        user: `Build the final structured result from the payload.
 
-      const prompt = `
-Build final cinematic scene description.
-
-Return JSON:
-
+Return JSON only:
 {
- "scene_title":"...",
- "scene_description":"...",
- "visual_prompt":"..."
+  "blocks": {
+    "preview": "...",
+    "scene_description": "...",
+    "story_concept": "...",
+    "prompt": "..."
+  }
 }
-`;
 
-      const completion = await client.chat.completions.create({
-        model: "gpt-4o-mini",
-        temperature: 0.7,
-        messages: [
-          { role: "system", content: "You assemble cinematic prompts." },
-          { role: "user", content: prompt }
-        ]
+Rules:
+- return only blocks
+- each block must be plain text
+- return JSON only
+
+Payload:
+${getUserPayloadText(payload)}`,
+        temperature: 0.7
       });
 
-      const text = completion.choices[0].message.content;
+      const checked = validator.validateByAction("FINAL_ASSEMBLY", raw);
+
+      if (!checked.ok) {
+        return res.status(422).json({
+          error: "Invalid AI response",
+          action,
+          details: checked.errors,
+          raw
+        });
+      }
 
       return res.json({
         ok: true,
-        action: "FINAL_ASSEMBLY",
-        data: JSON.parse(text)
+        action,
+        data: checked.data,
+        raw
       });
     }
 
     return res.status(400).json({ error: "Unknown action" });
-
   } catch (err) {
-
     console.error(err);
 
     return res.status(500).json({
       error: "AI error",
-      message: err.message
+      message: err?.message || String(err)
     });
-
   }
-
 }

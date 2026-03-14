@@ -152,6 +152,10 @@ ${getUserPayloadText(payload)}`,
     }
 
     if (action === "FINAL_ASSEMBLY") {
+      const seedScene = String(payload?.blueprint?.scene_core?.seed_scene || "").trim();
+      if (!seedScene) {
+        throw new Error("Assembly blocked: seed_scene missing");
+      }
       const raw = await runOpenAI({
         system: "You assemble final structured output for LiVi AI Scriptwriter. Return valid JSON only. Never return screenplay sections like SCENES, CHOICES, TRANSITIONS, VISUAL STYLE or PROMPTS.",
         user: `Build the final structured result.
@@ -186,17 +190,12 @@ ${getUserPayloadText(payload)}`,
       const checked = validator.validateByAction("FINAL_ASSEMBLY", raw);
 
       if (!checked.ok) {
-        return res.status(200).json({
-          ok: true,
+        return res.status(422).json({
+          error: "Assembly blocked: final assembly validation failed",
           action,
-          legacy_fallback: true,
-          data: {
-            blocks: {
-              legacy_fallback: String(raw || "").trim()
-            }
-          },
+          details: checked.errors,
           raw,
-          debug: makeDebugMeta("LEGACY_FALLBACK_TRIGGERED", {
+          debug: makeDebugMeta("FINAL_ASSEMBLY_BLOCKED", {
             reason: "FINAL_ASSEMBLY_VALIDATION_FAILED",
             validator_errors: checked.errors
           })

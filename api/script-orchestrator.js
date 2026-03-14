@@ -14,6 +14,14 @@ function getUserPayloadText(payload) {
   }
 }
 
+function makeDebugMeta(state, extra = {}) {
+  return {
+    state,
+    timestamp: new Date().toISOString(),
+    ...extra
+  };
+}
+
 async function runOpenAI({ system, user, temperature = 0.7 }) {
   const completion = await client.chat.completions.create({
     model: "gpt-4o-mini",
@@ -78,7 +86,10 @@ ${getUserPayloadText(payload)}`
           error: "Invalid AI response",
           action,
           details: checked.errors,
-          raw
+          raw,
+          debug: makeDebugMeta("SCENE_IDEAS_INVALID", {
+            validator_errors: checked.errors
+          })
         });
       }
 
@@ -86,7 +97,8 @@ ${getUserPayloadText(payload)}`
         ok: true,
         action,
         data: checked.data,
-        raw
+        raw,
+        debug: makeDebugMeta("SCENE_IDEAS_OK")
       });
     }
 
@@ -123,7 +135,10 @@ ${getUserPayloadText(payload)}`,
           error: "Invalid AI response",
           action,
           details: checked.errors,
-          raw
+          raw,
+          debug: makeDebugMeta("REFINEMENT_INVALID", {
+            validator_errors: checked.errors
+          })
         });
       }
 
@@ -131,7 +146,8 @@ ${getUserPayloadText(payload)}`,
         ok: true,
         action,
         data: checked.data,
-        raw
+        raw,
+        debug: makeDebugMeta("REFINEMENT_OK")
       });
     }
 
@@ -170,11 +186,20 @@ ${getUserPayloadText(payload)}`,
       const checked = validator.validateByAction("FINAL_ASSEMBLY", raw);
 
       if (!checked.ok) {
-        return res.status(422).json({
-          error: "Invalid AI response",
+        return res.status(200).json({
+          ok: true,
           action,
-          details: checked.errors,
-          raw
+          legacy_fallback: true,
+          data: {
+            blocks: {
+              legacy_fallback: String(raw || "").trim()
+            }
+          },
+          raw,
+          debug: makeDebugMeta("LEGACY_FALLBACK_TRIGGERED", {
+            reason: "FINAL_ASSEMBLY_VALIDATION_FAILED",
+            validator_errors: checked.errors
+          })
         });
       }
 
@@ -182,17 +207,24 @@ ${getUserPayloadText(payload)}`,
         ok: true,
         action,
         data: checked.data,
-        raw
+        raw,
+        debug: makeDebugMeta("FINAL_ASSEMBLY_OK")
       });
     }
 
-    return res.status(400).json({ error: "Unknown action" });
+    return res.status(400).json({
+      error: "Unknown action",
+      debug: makeDebugMeta("UNKNOWN_ACTION", { action })
+    });
   } catch (err) {
     console.error(err);
 
     return res.status(500).json({
       error: "AI error",
-      message: err?.message || String(err)
+      message: err?.message || String(err),
+      debug: makeDebugMeta("SERVER_ERROR", {
+        message: err?.message || String(err)
+      })
     });
   }
 }

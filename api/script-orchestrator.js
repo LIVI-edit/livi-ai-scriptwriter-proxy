@@ -137,23 +137,30 @@ ${getUserPayloadText(payload)}`,
 
     if (action === "FINAL_ASSEMBLY") {
       const raw = await runOpenAI({
-        system: "You assemble final structured output for LiVi AI Scriptwriter. Return valid JSON only.",
-        user: `Build the final structured result from the payload.
+        system: "You assemble final structured output for LiVi AI Scriptwriter. Return valid JSON only. Never return screenplay sections like SCENES, CHOICES, TRANSITIONS, VISUAL STYLE or PROMPTS.",
+        user: `Build the final structured result.
+
+STRICT RULES:
+- DO NOT return screenplay.
+- DO NOT return sections like SCENES / CHOICES / TRANSITIONS / VISUAL STYLE / PROMPTS.
+- You must return ONLY structured JSON blocks.
+- Each block must be plain text.
 
 Return JSON only:
 {
   "blocks": {
-    "preview": "...",
-    "scene_description": "...",
-    "story_concept": "...",
-    "prompt": "..."
+    "scene_preview": "...",
+    "scene_story": "...",
+    "visual_direction": "...",
+    "cinematic_prompt": "..."
   }
 }
 
-Rules:
-- return only blocks
-- each block must be plain text
-- return JSON only
+Definitions:
+- scene_preview: short cinematic description of the scene concept
+- scene_story: what actually happens in the scene
+- visual_direction: camera / lighting / atmosphere
+- cinematic_prompt: full generation-ready prompt for video or image AI
 
 Payload:
 ${getUserPayloadText(payload)}`,

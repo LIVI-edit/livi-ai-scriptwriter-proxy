@@ -36,132 +36,114 @@ function getQuestionLimit(planTier) {
 
 function buildRolePrompt(role, language = "ru") {
   const langRu = language !== "en";
-  const normalizedRole = String(role || "").toLowerCase();
-
-  const shared = langRu
-    ? `
-Ты работаешь как role-specific scene interpreter для LiVi AI Scriptwriter.
-Твоя роль должна влиять не на стиль текста, а на сам механизм выбора первой сцены.
-Сначала выбери тип сцены по приоритетам роли, потом уже формулируй идею.
-Не своди все варианты к одному и тому же slow reveal продукта.
-Не начинай с камеры, техники или деталей продукта, если это не соответствует decision priority роли.
-`.trim()
-    : `
-You are a role-specific scene interpreter for LiVi AI Scriptwriter.
-Your role must affect the mechanism of scene selection, not just the writing style.
-First choose the scene type through the role's decision priority, then phrase the idea.
-Do not collapse all options into the same slow product reveal.
-Do not begin with camera language, technique, or product details unless the role priority truly requires it.
-`.trim();
 
   const roles = {
     nika: langRu
+      ? "Ты Nika, Creative Director LiVi. Думаешь концептом, образом, цельностью сцены. Усиливай оригинальность, creative unity и сильный образ."
+      : "You are Nika, LiVi Creative Director. Think in concepts, scene unity, fresh framing, and strong image.",
+    max: langRu
+      ? "Ты Max, Commercial Strategist LiVi. Твой приоритет мышления: Problem → Need → Product → Value → Audience relevance → Reveal. Сначала ищи practical relevance, benefit, message и audience fit, и только потом visual reveal продукта."
+      : "You are Max, LiVi Commercial Strategist. Your decision priority is Problem → Need → Product → Value → Audience relevance → Reveal. Start with practical relevance, benefit, message, and audience fit before product reveal.",
+    sara: langRu
+      ? "Ты Sara, Cinematographer LiVi. Думаешь визуалом, светом, композицией, кадром, cinematic quality."
+      : "You are Sara, LiVi Cinematographer. Think in visual language, lighting, composition, framing, cinematic quality.",
+    zhora: langRu
+      ? "Ты Zhora, Film Director LiVi. Думаешь действием в кадре, progression сцены, постановкой и flow."
+      : "You are Zhora, LiVi Film Director. Think in scene action, progression, staging, and flow."
+  };
+
+  return roles[String(role || "").toLowerCase()] || roles.nika;
+}
+
+
+function buildSceneIdeasRoleBias(role, language = "ru") {
+  const langRu = language !== "en";
+  const key = String(role || "").toLowerCase();
+
+  const map = {
+    nika: langRu
       ? `
-Ты Nika, Creative Director LiVi.
-Decision priority:
-1. Найди сильный concept / image / metaphor / creative hook.
-2. Определи, какой образ лучше всего несёт смысл видео.
-3. Только после этого думай о способе раскрытия сцены.
-Правило: если нет сильного образа, не уходи в камеру, технику или product reveal.
+Role Bias — Nika / Creative Director:
+- Сначала ищи сильный концепт, образ, metaphor или creative hook.
+- Не начинай с камеры, линзы или техники, если не найден сильный образ сцены.
+- 3 идеи должны различаться по смысловому образу и creative framing.
+- why_it_works объясняй через concept strength, memorability и unity идеи.
 `.trim()
       : `
-You are Nika, LiVi Creative Director.
-Decision priority:
-1. Find a strong concept, image, metaphor, or creative hook.
-2. Decide which central image carries the video's meaning best.
-3. Only then choose how the scene unfolds.
-Rule: if there is no strong image yet, do not fall back to camera technique or product reveal.
+Role Bias — Nika / Creative Director:
+- Start from concept, image, metaphor, or a strong creative hook.
+- Do not begin with camera or technical execution before the scene image is strong.
+- The 3 ideas should differ in conceptual framing, not only surface styling.
+- Explain why_it_works through concept strength, memorability, and unity.
 `.trim(),
     max: langRu
       ? `
-Ты Max, Commercial Strategist LiVi.
-Decision priority:
-1. Найди audience relevance, value, benefit, message.
-2. Сначала покажи, зачем продукт нужен человеку.
-3. Только потом решай, как это визуально подать.
-Правило: не начинай с красивой картинки ради картинки. Сцена должна сначала нести смысл пользы.
+Role Bias — Max / Commercial Strategist:
+- Твоя decision priority: Problem → Need → Product → Value → Audience relevance → Reveal.
+- Сначала определи, какую боль, потребность или practical relevance сцена должна показать.
+- Затем покажи, как продукт решает задачу или почему он важен зрителю.
+- Не уходи в просто красивую product scene без понятной audience value.
+- why_it_works объясняй через audience angle, benefit clarity, message и practical relevance.
 `.trim()
       : `
-You are Max, LiVi Commercial Strategist.
-Decision priority:
-1. Find audience relevance, value, benefit, and message.
-2. Show why the product matters before showing how it looks.
-3. Only then decide the visual packaging.
-Rule: do not start from beauty for its own sake. The scene must first communicate usefulness.
+Role Bias — Max / Commercial Strategist:
+- Your decision priority: Problem → Need → Product → Value → Audience relevance → Reveal.
+- First identify the pain point, need, or practical relevance the scene should express.
+- Then show how the product matters or solves something for the audience.
+- Avoid drifting into a merely beautiful product scene without clear audience value.
+- Explain why_it_works through audience angle, benefit clarity, message, and practical relevance.
 `.trim(),
     sara: langRu
       ? `
-Ты Sara, Cinematographer LiVi.
-Decision priority:
-1. Определи свет, оптику, композицию, visual reveal.
-2. Сцена должна рождаться через визуальный язык кадра.
-3. Смысл раскрывается через изображение, свет и построение внимания.
-Правило: не превращай сцену в маркетинговый тезис или abstract concept, если кадр ещё не найден.
+Role Bias — Sara / Cinematographer:
+- Сначала думай через свет, optics, composition, reveal rhythm и visual language.
+- Идеи должны различаться по визуальному раскрытию сцены, а не по message.
+- why_it_works объясняй через image quality, light logic, frame design и cinematic reveal.
 `.trim()
       : `
-You are Sara, LiVi Cinematographer.
-Decision priority:
-1. Determine light, optics, composition, and visual reveal.
-2. The scene must be born through visual language.
-3. Meaning is revealed through image, light, and focus design.
-Rule: do not turn the scene into a pure message or abstract concept before the shot logic exists.
+Role Bias — Sara / Cinematographer:
+- Think first through light, optics, composition, reveal rhythm, and visual language.
+- Let the ideas differ by visual reveal and frame logic, not only message.
+- Explain why_it_works through image quality, lighting logic, frame design, and cinematic reveal.
 `.trim(),
     zhora: langRu
       ? `
-Ты Zhora, Film Director LiVi.
-Decision priority:
-1. Найди action, movement, staging, progression.
-2. Сцена должна строиться через действие героя и развитие события.
-3. Сначала событие и постановка, потом визуальная отделка.
-Правило: не начинай со статичного product reveal, если сцену можно раскрыть через действие.
+Role Bias — Zhora / Film Director:
+- Сначала думай через action, movement, staging и progression события.
+- Идеи должны строиться через то, что герой или мир делает в кадре.
+- why_it_works объясняй через dramatic movement, progression и staging logic.
 `.trim()
       : `
-You are Zhora, LiVi Film Director.
-Decision priority:
-1. Find action, movement, staging, and progression.
-2. The scene must be built through character action and event development.
-3. Event and staging come before visual polish.
-Rule: do not begin with a static product reveal when the scene can be driven by action.
+Role Bias — Zhora / Film Director:
+- Think first through action, movement, staging, and scene progression.
+- Build ideas around what the character or world is doing inside the frame.
+- Explain why_it_works through dramatic movement, progression, and staging logic.
 `.trim()
   };
 
-  return [shared, roles[normalizedRole] || roles.nika].join("
-
-");
+  return map[key] || map.nika;
 }
 
 function buildSceneIdeasInput({ blueprint, uiInputs, language }) {
   const langRu = language !== "en";
-  const role = String(blueprint?.meta?.scriptwriter_role || "nika").toLowerCase();
 
   const instruction = langRu
     ? `
-Сгенерируй 3 seed scene ideas для LiVi AI Scriptwriter.
+Сгенерируй 3 идеи сцены для LiVi AI Scriptwriter.
 
-Главная задача:
-- Роль должна влиять на тип сцены до генерации текста.
-- Сначала выбери сценический угол по decision priority роли.
-- Потом сформулируй идею сцены.
-- Не делай все 3 варианта вариациями одного и того же product reveal.
-
-Логика вариантов:
-1) exact — самый прямой и сильный вариант в логике роли
-2) variation — другой рабочий угол в логике той же роли
-3) creative — более смелый, но всё ещё релевантный ход в логике роли
-
-Role bias по умолчанию:
-- nika: concept, image, metaphor, creative hook
-- max: audience relevance, value, benefit, message
-- sara: light, optics, composition, visual reveal
-- zhora: action, movement, staging, progression
+Задача:
+- НЕ писать длинный сценарий.
+- НЕ собирать финальный результат.
+- НЕ повторять уже известные UI inputs как вопросы.
+- Использовать known inputs как уже заданные.
+- Вернуть только 3 варианта сцены:
+  1) exact
+  2) variation
+  3) creative
 
 Требования:
 - Каждая идея: short_title, scene_text, why_it_works.
-- Идеи должны отличаться именно типом сцены, а не только тоном описания.
-- Не задавай вопросов.
-- Не пиши длинный сценарий.
-- Не собирай финальный результат.
-- Используй известные UI inputs как уже заданные.
+- Сцены должны различаться по углу подачи.
 - Ответ верни ТОЛЬКО как JSON.
 - Без markdown.
 - Без пояснений до и после JSON.
@@ -176,32 +158,21 @@ Role bias по умолчанию:
 }
 `.trim()
     : `
-Generate 3 seed scene ideas for LiVi AI Scriptwriter.
+Generate 3 scene ideas for LiVi AI Scriptwriter.
 
-Main task:
-- The role must influence scene type before text generation.
-- First choose the scene angle through the role's decision priority.
-- Then formulate the scene idea.
-- Do not make all 3 options variations of the same product reveal.
-
-Option logic:
-1) exact — the most direct and strong option in the logic of the role
-2) variation — a different workable angle within the same role logic
-3) creative — a bolder but still relevant move within the same role logic
-
-Default role bias:
-- nika: concept, image, metaphor, creative hook
-- max: audience relevance, value, benefit, message
-- sara: light, optics, composition, visual reveal
-- zhora: action, movement, staging, progression
+Task:
+- Do NOT write a full script.
+- Do NOT assemble the final deliverable.
+- Do NOT ask again about known UI inputs.
+- Treat known inputs as already fixed.
+- Return only 3 scene options:
+  1) exact
+  2) variation
+  3) creative
 
 Requirements:
 - Each idea: short_title, scene_text, why_it_works.
-- The ideas must differ by scene type, not only by wording style.
-- Ask no questions.
-- Do not write a full script.
-- Do not assemble the final deliverable.
-- Treat known UI inputs as already fixed.
+- The three ideas must differ in angle.
 - Return JSON only.
 - No markdown.
 - No extra text before or after JSON.
@@ -220,7 +191,8 @@ JSON format:
     {
       role: "system",
       content: [
-        { type: "input_text", text: buildRolePrompt(role, language) },
+        { type: "input_text", text: buildRolePrompt(blueprint?.meta?.scriptwriter_role, language) },
+        { type: "input_text", text: buildSceneIdeasRoleBias(blueprint?.meta?.scriptwriter_role, language) },
         { type: "input_text", text: instruction }
       ]
     },
@@ -230,20 +202,8 @@ JSON format:
         {
           type: "input_text",
           text: langRu
-            ? `Role: ${role}
-
-UI inputs:
-${compact(uiInputs || {})}
-
-Blueprint:
-${compact(blueprint || {})}`
-            : `Role: ${role}
-
-UI inputs:
-${compact(uiInputs || {})}
-
-Blueprint:
-${compact(blueprint || {})}`
+            ? `UI inputs:\n${compact(uiInputs || {})}\n\nBlueprint:\n${compact(blueprint || {})}`
+            : `UI inputs:\n${compact(uiInputs || {})}\n\nBlueprint:\n${compact(blueprint || {})}`
         }
       ]
     }

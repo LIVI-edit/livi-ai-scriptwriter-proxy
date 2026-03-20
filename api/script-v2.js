@@ -45,14 +45,34 @@ function buildRolePrompt(role, language = "ru") {
       ? "Ты Max, Commercial Strategist LiVi. Думаешь message, audience, value, CTA и conversion mindset."
       : "You are Max, LiVi Commercial Strategist. Think in message, audience, value, CTA, and conversion mindset.",
     sara: langRu
-      ? "Ты Sara, Cinematographer LiVi. Думаешь визуалом, светом, композицией, кадром, cinematic quality."
-      : "You are Sara, LiVi Cinematographer. Think in visual language, lighting, composition, framing, cinematic quality.",
+      ? "Ты Sara, Cinematographer LiVi. Твой приоритет: light → optics → composition → visual reveal → mood. Строй сцену через визуальный язык, свет и способ раскрытия кадра."
+      : "You are Sara, LiVi Cinematographer. Your priority is light → optics → composition → visual reveal → mood. Build the scene through visual language, light and the way the frame reveals itself.",
     zhora: langRu
-      ? "Ты Zhora, Film Director LiVi. Думаешь действием в кадре, progression сцены, постановкой и flow."
-      : "You are Zhora, LiVi Film Director. Think in scene action, progression, staging, and flow."
+      ? "Ты Zhora, Film Director LiVi. Твой приоритет: action → movement → staging → progression → payoff. Строй сцену через действие героя, мизансцену и развитие события."
+      : "You are Zhora, LiVi Film Director. Your priority is action → movement → staging → progression → payoff. Build the scene through character action, staging and event progression."
   };
 
   return roles[String(role || "").toLowerCase()] || roles.nika;
+}
+
+
+function buildRoleBiasNotes(role, language = "ru") {
+  const langRu = language !== "en";
+  const notes = {
+    nika: langRu
+      ? "Role bias: можно сохранить тот же сценический вектор, если user constraints совпадают, но внутри сцены делай акцент на образе, метафоре, символе и creative hook."
+      : "Role bias: the same scene vector may remain if user constraints match, but the internal emphasis must be image, metaphor, symbol and creative hook.",
+    max: langRu
+      ? "Role bias: можно сохранить тот же scene vector, но подай его через audience angle, benefit framing, value clarity, message и product relevance. Не уходи в просто красивую product scene без понятной пользы."
+      : "Role bias: the same scene vector may remain, but frame it through audience angle, benefit framing, value clarity, message and product relevance. Do not drift into a merely pretty product scene without clear usefulness.",
+    sara: langRu
+      ? "Role bias: можно сохранить тот же scene vector, но строй его через свет, глубину кадра, композицию, reveal и visual language."
+      : "Role bias: the same scene vector may remain, but build it through light, frame depth, composition, reveal and visual language.",
+    zhora: langRu
+      ? "Role bias: можно сохранить тот же scene vector, но строй его через действие, blocking, progression и развитие события."
+      : "Role bias: the same scene vector may remain, but build it through action, blocking, progression and event development."
+  };
+  return notes[String(role || "").toLowerCase()] || notes.nika;
 }
 
 function buildSceneIdeasInput({ blueprint, uiInputs, language }) {
@@ -104,6 +124,8 @@ Task:
 Requirements:
 - Each idea: short_title, scene_text, why_it_works.
 - The three ideas must differ in angle.
+- Role bias must change decision priority, interpretation and scene emphasis, not just wording.
+- If user constraints are the same, the broad scene vector may still overlap, but the role-specific reasoning focus must be clearly different.
 - Return JSON only.
 - No markdown.
 - No extra text before or after JSON.
@@ -123,6 +145,7 @@ JSON format:
       role: "system",
       content: [
         { type: "input_text", text: buildRolePrompt(blueprint?.meta?.scriptwriter_role, language) },
+        { type: "input_text", text: buildRoleBiasNotes(blueprint?.meta?.scriptwriter_role, language) },
         { type: "input_text", text: instruction }
       ]
     },
@@ -209,6 +232,7 @@ Rules:
       role: "system",
       content: [
         { type: "input_text", text: buildRolePrompt(blueprint?.meta?.scriptwriter_role, language) },
+        { type: "input_text", text: buildRoleBiasNotes(blueprint?.meta?.scriptwriter_role, language) },
         { type: "input_text", text: instruction }
       ]
     },
@@ -298,6 +322,7 @@ Rules:
       role: "system",
       content: [
         { type: "input_text", text: buildRolePrompt(blueprint?.meta?.scriptwriter_role, language) },
+        { type: "input_text", text: buildRoleBiasNotes(blueprint?.meta?.scriptwriter_role, language) },
         { type: "input_text", text: instruction }
       ]
     },

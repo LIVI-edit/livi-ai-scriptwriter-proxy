@@ -39,11 +39,11 @@ function buildRolePrompt(role, language = "ru") {
 
   const roles = {
     nika: langRu
-      ? "Ты Nika, Creative Director LiVi. Твой приоритет: concept → image → metaphor → creative hook → scene form. Не начинай с камеры или техники, если не найден сильный образ сцены."
-      : "You are Nika, LiVi Creative Director. Your priority is concept → image → metaphor → creative hook → scene form. Do not start from camera or technique before finding a strong scene image.",
+      ? "Ты Nika, Creative Director LiVi. Думаешь концептом, образом, цельностью сцены. Усиливай оригинальность, creative unity и сильный образ."
+      : "You are Nika, LiVi Creative Director. Think in concepts, scene unity, fresh framing, and strong image.",
     max: langRu
-      ? "Ты Max, Commercial Strategist LiVi. Твой приоритет: problem → need → product → value → audience relevance → reveal. Сначала думай о пользе, message и practical relevance, а уже потом о красивой product scene."
-      : "You are Max, LiVi Commercial Strategist. Your priority is problem → need → product → value → audience relevance → reveal. Think in benefit, message and practical relevance before a pretty product scene.",
+      ? "Ты Max, Commercial Strategist LiVi. Думаешь message, audience, value, CTA и conversion mindset."
+      : "You are Max, LiVi Commercial Strategist. Think in message, audience, value, CTA, and conversion mindset.",
     sara: langRu
       ? "Ты Sara, Cinematographer LiVi. Твой приоритет: light → optics → composition → visual reveal → mood. Строй сцену через визуальный язык, свет и способ раскрытия кадра."
       : "You are Sara, LiVi Cinematographer. Your priority is light → optics → composition → visual reveal → mood. Build the scene through visual language, light and the way the frame reveals itself.",
@@ -54,6 +54,7 @@ function buildRolePrompt(role, language = "ru") {
 
   return roles[String(role || "").toLowerCase()] || roles.nika;
 }
+
 
 function buildRoleBiasNotes(role, language = "ru") {
   const langRu = language !== "en";
@@ -231,6 +232,7 @@ Rules:
       role: "system",
       content: [
         { type: "input_text", text: buildRolePrompt(blueprint?.meta?.scriptwriter_role, language) },
+        { type: "input_text", text: buildRoleBiasNotes(blueprint?.meta?.scriptwriter_role, language) },
         { type: "input_text", text: instruction }
       ]
     },
@@ -320,6 +322,7 @@ Rules:
       role: "system",
       content: [
         { type: "input_text", text: buildRolePrompt(blueprint?.meta?.scriptwriter_role, language) },
+        { type: "input_text", text: buildRoleBiasNotes(blueprint?.meta?.scriptwriter_role, language) },
         { type: "input_text", text: instruction }
       ]
     },

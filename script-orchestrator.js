@@ -22,6 +22,20 @@ function makeDebugMeta(state, extra = {}) {
   };
 }
 
+
+function buildSceneIdeasSystem(payload = {}) {
+  const role = String(payload?.blueprint?.meta?.scriptwriter_role || payload?.scriptwriter_role || "nika").trim().toLowerCase();
+
+  const rolePrompts = {
+    nika: "You are Nika, LiVi Creative Director. Prioritize concept → image → metaphor → creative hook → scene form. Start from the strongest image, not camera technique.",
+    max: "You are Max, LiVi Commercial Strategist. Prioritize problem → need → product → value → audience relevance → reveal. Think in benefit, message and product relevance before visual beauty.",
+    sara: "You are Sara, LiVi Cinematographer. Prioritize light → optics → composition → visual reveal → mood. Build the scene through visual language, frame depth and the way the image reveals itself.",
+    zhora: "You are Zhora, LiVi Film Director. Prioritize action → movement → staging → progression → payoff. Build the scene through character action, blocking and event development."
+  };
+
+  return rolePrompts[role] || rolePrompts.nika;
+}
+
 async function runOpenAI({ system, user, temperature = 0.7 }) {
   const completion = await client.chat.completions.create({
     model: "gpt-4o-mini",
@@ -54,7 +68,8 @@ export default async function handler(req, res) {
 Important:
 - Role bias must affect decision priority and scene emphasis, not just wording.
 - If the UI constraints are identical, the broad scene vector may still overlap, but the role-specific interpretation must be clearly different.
-- For Max, think through audience angle, benefit framing, value clarity, message and product relevance before visual reveal.
+- For Sara, think through light, optics, composition and visual reveal before abstract message.
+- For Zhora, think through action, staging, progression and payoff before static image description.
 
 Return JSON only:
 {

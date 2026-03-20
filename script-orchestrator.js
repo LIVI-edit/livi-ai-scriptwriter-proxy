@@ -22,14 +22,6 @@ function makeDebugMeta(state, extra = {}) {
   };
 }
 
-function safeParseJson(raw) {
-  try {
-    return JSON.parse(String(raw || "").trim());
-  } catch (_) {
-    return null;
-  }
-}
-
 async function runOpenAI({ system, user, temperature = 0.7 }) {
   const completion = await client.chat.completions.create({
     model: "gpt-4o-mini",
@@ -55,157 +47,65 @@ export default async function handler(req, res) {
     const payload = body.payload || {};
 
     if (action === "SCENE_IDEAS") {
-      const role = String(payload?.meta?.scriptwriter_role || "nika").trim().toLowerCase();
-      const langRu = String(payload?.meta?.language || payload?.language || "ru").toLowerCase() !== "en";
+      const raw = await runOpenAI({
+        system: buildSceneIdeasSystem(payload),
+        user: `Create 3 cinematic scene ideas based on this payload.
 
-      const roleSystem = langRu
-        ? {
-            nika: `Ты Nika, Creative Director LiVi.
+Important:
+- Role bias must affect decision priority and scene emphasis, not just wording.
+- If the UI constraints are identical, the broad scene vector may still overlap, but the role-specific interpretation must be clearly different.
+- For Max, think through audience angle, benefit framing, value clarity, message and product relevance before visual reveal.
 
-Твоя роль должна влиять на механизм выбора сцены до генерации текста.
-Decision priority:
-1. Найди concept, image, metaphor, creative hook.
-2. Определи центральный образ сцены.
-3. Только потом решай, как сцена раскрывается.
-Правило: не начинай с камеры, техники или product reveal, если не найден сильный образ.`,
-            max: `Ты Max, Commercial Strategist LiVi.
-
-Твоя роль должна влиять на механизм выбора сцены до генерации текста.
-Decision priority:
-1. Сначала найди Problem → Need → Product → Value.
-2. Потом определи audience relevance, benefit, message и practical reason to care.
-3. Только после этого решай reveal и визуальную упаковку сцены.
-Правило: не начинай с красивого product reveal, пока не ясны польза, сообщение и relevance для аудитории.`,
-            sara: `Ты Sara, Cinematographer LiVi.
-
-Твоя роль должна влиять на механизм выбора сцены до генерации текста.
-Decision priority:
-1. Определи light, optics, composition, visual reveal.
-2. Сцена должна строиться через визуальный язык кадра.
-3. Смысл раскрывается через изображение, свет и композицию.
-Правило: не уходи в abstract concept или marketing message, если shot logic ещё не найден.`,
-            zhora: `Ты Zhora, Film Director LiVi.
-
-Твоя роль должна влиять на механизм выбора сцены до генерации текста.
-Decision priority:
-1. Найди action, movement, staging, progression.
-2. Сцена должна строиться через действие героя и развитие события.
-3. Сначала событие и постановка, потом визуальная отделка.
-Правило: не начинай со статичного reveal, если сцену можно раскрыть через действие.`
-          }
-        : {
-            nika: `You are Nika, LiVi Creative Director.
-
-Your role must affect the mechanism of scene selection before text generation.
-Decision priority:
-1. Find concept, image, metaphor, creative hook.
-2. Choose the central image of the scene.
-3. Only then decide how the scene unfolds.
-Rule: do not begin with camera technique or product reveal before a strong image exists.`,
-            max: `You are Max, LiVi Commercial Strategist.
-
-Your role must affect the mechanism of scene selection before text generation.
-Decision priority:
-1. First identify Problem → Need → Product → Value.
-2. Then define audience relevance, benefit, message, and practical reason to care.
-3. Only after that decide the reveal and visual packaging.
-Rule: do not start with a beautiful product reveal until value, message, and audience relevance are clear.`,
-            sara: `You are Sara, LiVi Cinematographer.
-
-Your role must affect the mechanism of scene selection before text generation.
-Decision priority:
-1. Determine light, optics, composition, visual reveal.
-2. The scene must be built through visual language.
-3. Meaning is revealed through image, light, and composition.
-Rule: do not drift into abstract concept or marketing message before shot logic exists.`,
-            zhora: `You are Zhora, LiVi Film Director.
-
-Your role must affect the mechanism of scene selection before text generation.
-Decision priority:
-1. Find action, movement, staging, progression.
-2. The scene must be built through character action and event development.
-3. Event and staging come before visual polish.
-Rule: do not begin with a static reveal if the scene can be driven by action.`
-          };
-
-      const sceneIdeasUser = langRu
-        ? `Сгенерируй 3 seed scene ideas для LiVi AI Scriptwriter.
-
-Главная задача:
-- Роль должна влиять на тип сцены до генерации текста.
-- Сначала выбери сценический угол по decision priority роли.
-- Потом сформулируй идею сцены.
-- Не делай все 3 варианта вариациями одного и того же slow reveal продукта.
-
-Логика вариантов:
-1) exact — самый прямой и сильный вариант в логике роли
-2) variation — другой рабочий угол в логике той же роли
-3) creative — более смелый, но всё ещё релевантный ход в логике роли
-
-Role bias:
-- nika: concept, image, metaphor, creative hook
-- max: Problem → Need → Product → Value → Audience relevance → Reveal
-- sara: light, optics, composition, visual reveal
-- zhora: action, movement, staging, progression
-
-Требования:
-- Каждая идея: short_title, scene_text, why_it_works.
-- Идеи должны отличаться типом сцены, а не только стилем текста.
-- Не писать длинный сценарий.
-- Не собирать финальный результат.
-- Не задавать вопросов.
-- Вернуть JSON только в формате:
+Return JSON only:
 {
   "ideas": [
-    { "id": "exact", "short_title": "...", "scene_text": "...", "why_it_works": "..." },
-    { "id": "variation", "short_title": "...", "scene_text": "...", "why_it_works": "..." },
-    { "id": "creative", "short_title": "...", "scene_text": "...", "why_it_works": "..." }
+    {
+      "id": "exact",
+      "short_title": "...",
+      "scene_text": "...",
+      "why_it_works": "..."
+    },
+    {
+      "id": "variation",
+      "short_title": "...",
+      "scene_text": "...",
+      "why_it_works": "..."
+    },
+    {
+      "id": "creative",
+      "short_title": "...",
+      "scene_text": "...",
+      "why_it_works": "..."
+    }
   ]
 }
 
 Payload:
 ${getUserPayloadText(payload)}`
-        : `Generate 3 seed scene ideas for LiVi AI Scriptwriter.
-
-Main task:
-- The role must influence scene type before text generation.
-- First choose the scene angle through the role's decision priority.
-- Then formulate the scene idea.
-- Do not make all 3 options variations of the same slow product reveal.
-
-Option logic:
-1) exact — the most direct and strong option in the logic of the role
-2) variation — a different workable angle within the same role logic
-3) creative — a bolder but still relevant move within the same role logic
-
-Role bias:
-- nika: concept, image, metaphor, creative hook
-- max: Problem → Need → Product → Value → Audience relevance → Reveal
-- sara: light, optics, composition, visual reveal
-- zhora: action, movement, staging, progression
-
-Requirements:
-- Each idea: short_title, scene_text, why_it_works.
-- Ideas must differ by scene type, not just wording style.
-- Do not write a full script.
-- Do not assemble the final deliverable.
-- Ask no questions.
-- Return JSON only in this format:
-{
-  "ideas": [
-    { "id": "exact", "short_title": "...", "scene_text": "...", "why_it_works": "..." },
-    { "id": "variation", "short_title": "...", "scene_text": "...", "why_it_works": "..." },
-    { "id": "creative", "short_title": "...", "scene_text": "...", "why_it_works": "..." }
-  ]
-}
-
-Payload:
-${getUserPayloadText(payload)}`;
-
-      const raw = await runOpenAI({
-        system: roleSystem[role] || roleSystem.nika,
-        user: sceneIdeasUser
       });
+
+      const checked = validator.validateByAction("SCENE_IDEAS", raw);
+
+      if (!checked.ok) {
+        return res.status(422).json({
+          error: "Invalid AI response",
+          action,
+          details: checked.errors,
+          raw,
+          debug: makeDebugMeta("SCENE_IDEAS_INVALID", {
+            validator_errors: checked.errors
+          })
+        });
+      }
+
+      return res.json({
+        ok: true,
+        action,
+        data: checked.data,
+        raw,
+        debug: makeDebugMeta("SCENE_IDEAS_OK")
+      });
+    }
 
     if (action === "REFINEMENT") {
       const raw = await runOpenAI({
@@ -259,52 +159,38 @@ ${getUserPayloadText(payload)}`,
     if (action === "FINAL_ASSEMBLY") {
       const raw = await runOpenAI({
         system: "You assemble final structured output for LiVi AI Scriptwriter. Return valid JSON only. Never return screenplay sections like SCENES, CHOICES, TRANSITIONS, VISUAL STYLE or PROMPTS.",
-        user: `Build the final structured result using Scene Blueprint as the source of truth and Result Schema as the output rule.
+        user: `Build the final structured result.
 
 STRICT RULES:
 - DO NOT return screenplay.
 - DO NOT return sections like SCENES / CHOICES / TRANSITIONS / VISUAL STYLE / PROMPTS.
 - You must return ONLY structured JSON blocks.
 - Each block must be plain text.
-- Return only blocks that are actually supported by the schema/payload.
-- No markdown.
-- No explanations outside JSON.
 
 Return JSON only:
 {
   "blocks": {
-    "preview": "...",
-    "video_overview": "...",
-    "visual_emotional_direction": "...",
-    "scene_description": "...",
-    "story_concept": "...",
-    "scene_breakdown": "...",
-    "prompt": "...",
-    "production_notes": "..."
+    "scene_preview": "...",
+    "scene_story": "...",
+    "visual_direction": "...",
+    "cinematic_prompt": "..."
   }
 }
 
 Definitions:
-- preview: short human preview of the concept and intended effect
-- video_overview: concise overview of type, goal and delivery logic
-- visual_emotional_direction: mood, light, atmosphere, palette and visual language
-- scene_description: what happens inside the scene
-- story_concept: the narrative meaning of the piece as a whole
-- scene_breakdown: production structure / beats / stages
-- prompt: generation-ready video or image prompt
-- production_notes: short professional notes on pacing, camera, edit or emphasis
+- scene_preview: short cinematic description of the scene concept
+- scene_story: what actually happens in the scene
+- visual_direction: camera / lighting / atmosphere
+- cinematic_prompt: full generation-ready prompt for video or image AI
 
 Payload:
 ${getUserPayloadText(payload)}`,
         temperature: 0.7
       });
 
-      const parsed = safeParseJson(raw);
-      const blocks = parsed && parsed.blocks && typeof parsed.blocks === "object" ? parsed.blocks : null;
+      const checked = validator.validateByAction("FINAL_ASSEMBLY", raw);
 
-      if (!blocks) {
-        console.log("FINAL_ASSEMBLY_VALIDATION_FAILED", { raw });
-
+      if (!checked.ok) {
         return res.status(200).json({
           ok: true,
           action,
@@ -315,10 +201,9 @@ ${getUserPayloadText(payload)}`,
             }
           },
           raw,
-          raw_ai_output: String(raw || "").trim(),
-          validator_errors: ["FINAL_ASSEMBLY_JSON_PARSE_FAILED_OR_BLOCKS_MISSING"],
           debug: makeDebugMeta("LEGACY_FALLBACK_TRIGGERED", {
-            reason: "FINAL_ASSEMBLY_JSON_PARSE_FAILED_OR_BLOCKS_MISSING"
+            reason: "FINAL_ASSEMBLY_VALIDATION_FAILED",
+            validator_errors: checked.errors
           })
         });
       }
@@ -326,7 +211,7 @@ ${getUserPayloadText(payload)}`,
       return res.json({
         ok: true,
         action,
-        data: { blocks },
+        data: checked.data,
         raw,
         debug: makeDebugMeta("FINAL_ASSEMBLY_OK")
       });

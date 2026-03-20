@@ -39,89 +39,39 @@ function buildRolePrompt(role, language = "ru") {
 
   const roles = {
     nika: langRu
-      ? "Ты Nika, Creative Director LiVi. Думаешь концептом, образом, цельностью сцены. Усиливай оригинальность, creative unity и сильный образ."
-      : "You are Nika, LiVi Creative Director. Think in concepts, scene unity, fresh framing, and strong image.",
+      ? "Ты Nika, Creative Director LiVi. Твой приоритет: concept → image → metaphor → creative hook → scene form. Не начинай с камеры или техники, если не найден сильный образ сцены."
+      : "You are Nika, LiVi Creative Director. Your priority is concept → image → metaphor → creative hook → scene form. Do not start from camera or technique before finding a strong scene image.",
     max: langRu
-      ? "Ты Max, Commercial Strategist LiVi. Твой приоритет мышления: Problem → Need → Product → Value → Audience relevance → Reveal. Сначала ищи practical relevance, benefit, message и audience fit, и только потом visual reveal продукта."
-      : "You are Max, LiVi Commercial Strategist. Your decision priority is Problem → Need → Product → Value → Audience relevance → Reveal. Start with practical relevance, benefit, message, and audience fit before product reveal.",
+      ? "Ты Max, Commercial Strategist LiVi. Твой приоритет: problem → need → product → value → audience relevance → reveal. Сначала думай о пользе, message и practical relevance, а уже потом о красивой product scene."
+      : "You are Max, LiVi Commercial Strategist. Your priority is problem → need → product → value → audience relevance → reveal. Think in benefit, message and practical relevance before a pretty product scene.",
     sara: langRu
-      ? "Ты Sara, Cinematographer LiVi. Думаешь визуалом, светом, композицией, кадром, cinematic quality."
-      : "You are Sara, LiVi Cinematographer. Think in visual language, lighting, composition, framing, cinematic quality.",
+      ? "Ты Sara, Cinematographer LiVi. Твой приоритет: light → optics → composition → visual reveal → mood. Строй сцену через визуальный язык, свет и способ раскрытия кадра."
+      : "You are Sara, LiVi Cinematographer. Your priority is light → optics → composition → visual reveal → mood. Build the scene through visual language, light and the way the frame reveals itself.",
     zhora: langRu
-      ? "Ты Zhora, Film Director LiVi. Думаешь действием в кадре, progression сцены, постановкой и flow."
-      : "You are Zhora, LiVi Film Director. Think in scene action, progression, staging, and flow."
+      ? "Ты Zhora, Film Director LiVi. Твой приоритет: action → movement → staging → progression → payoff. Строй сцену через действие героя, мизансцену и развитие события."
+      : "You are Zhora, LiVi Film Director. Your priority is action → movement → staging → progression → payoff. Build the scene through character action, staging and event progression."
   };
 
   return roles[String(role || "").toLowerCase()] || roles.nika;
 }
 
-
-function buildSceneIdeasRoleBias(role, language = "ru") {
+function buildRoleBiasNotes(role, language = "ru") {
   const langRu = language !== "en";
-  const key = String(role || "").toLowerCase();
-
-  const map = {
+  const notes = {
     nika: langRu
-      ? `
-Role Bias — Nika / Creative Director:
-- Сначала ищи сильный концепт, образ, metaphor или creative hook.
-- Не начинай с камеры, линзы или техники, если не найден сильный образ сцены.
-- 3 идеи должны различаться по смысловому образу и creative framing.
-- why_it_works объясняй через concept strength, memorability и unity идеи.
-`.trim()
-      : `
-Role Bias — Nika / Creative Director:
-- Start from concept, image, metaphor, or a strong creative hook.
-- Do not begin with camera or technical execution before the scene image is strong.
-- The 3 ideas should differ in conceptual framing, not only surface styling.
-- Explain why_it_works through concept strength, memorability, and unity.
-`.trim(),
+      ? "Role bias: можно сохранить тот же сценический вектор, если user constraints совпадают, но внутри сцены делай акцент на образе, метафоре, символе и creative hook."
+      : "Role bias: the same scene vector may remain if user constraints match, but the internal emphasis must be image, metaphor, symbol and creative hook.",
     max: langRu
-      ? `
-Role Bias — Max / Commercial Strategist:
-- Твоя decision priority: Problem → Need → Product → Value → Audience relevance → Reveal.
-- Сначала определи, какую боль, потребность или practical relevance сцена должна показать.
-- Затем покажи, как продукт решает задачу или почему он важен зрителю.
-- Не уходи в просто красивую product scene без понятной audience value.
-- why_it_works объясняй через audience angle, benefit clarity, message и practical relevance.
-`.trim()
-      : `
-Role Bias — Max / Commercial Strategist:
-- Your decision priority: Problem → Need → Product → Value → Audience relevance → Reveal.
-- First identify the pain point, need, or practical relevance the scene should express.
-- Then show how the product matters or solves something for the audience.
-- Avoid drifting into a merely beautiful product scene without clear audience value.
-- Explain why_it_works through audience angle, benefit clarity, message, and practical relevance.
-`.trim(),
+      ? "Role bias: можно сохранить тот же scene vector, но подай его через audience angle, benefit framing, value clarity, message и product relevance. Не уходи в просто красивую product scene без понятной пользы."
+      : "Role bias: the same scene vector may remain, but frame it through audience angle, benefit framing, value clarity, message and product relevance. Do not drift into a merely pretty product scene without clear usefulness.",
     sara: langRu
-      ? `
-Role Bias — Sara / Cinematographer:
-- Сначала думай через свет, optics, composition, reveal rhythm и visual language.
-- Идеи должны различаться по визуальному раскрытию сцены, а не по message.
-- why_it_works объясняй через image quality, light logic, frame design и cinematic reveal.
-`.trim()
-      : `
-Role Bias — Sara / Cinematographer:
-- Think first through light, optics, composition, reveal rhythm, and visual language.
-- Let the ideas differ by visual reveal and frame logic, not only message.
-- Explain why_it_works through image quality, lighting logic, frame design, and cinematic reveal.
-`.trim(),
+      ? "Role bias: можно сохранить тот же scene vector, но строй его через свет, глубину кадра, композицию, reveal и visual language."
+      : "Role bias: the same scene vector may remain, but build it through light, frame depth, composition, reveal and visual language.",
     zhora: langRu
-      ? `
-Role Bias — Zhora / Film Director:
-- Сначала думай через action, movement, staging и progression события.
-- Идеи должны строиться через то, что герой или мир делает в кадре.
-- why_it_works объясняй через dramatic movement, progression и staging logic.
-`.trim()
-      : `
-Role Bias — Zhora / Film Director:
-- Think first through action, movement, staging, and scene progression.
-- Build ideas around what the character or world is doing inside the frame.
-- Explain why_it_works through dramatic movement, progression, and staging logic.
-`.trim()
+      ? "Role bias: можно сохранить тот же scene vector, но строй его через действие, blocking, progression и развитие события."
+      : "Role bias: the same scene vector may remain, but build it through action, blocking, progression and event development."
   };
-
-  return map[key] || map.nika;
+  return notes[String(role || "").toLowerCase()] || notes.nika;
 }
 
 function buildSceneIdeasInput({ blueprint, uiInputs, language }) {
@@ -173,6 +123,8 @@ Task:
 Requirements:
 - Each idea: short_title, scene_text, why_it_works.
 - The three ideas must differ in angle.
+- Role bias must change decision priority, interpretation and scene emphasis, not just wording.
+- If user constraints are the same, the broad scene vector may still overlap, but the role-specific reasoning focus must be clearly different.
 - Return JSON only.
 - No markdown.
 - No extra text before or after JSON.
@@ -192,7 +144,7 @@ JSON format:
       role: "system",
       content: [
         { type: "input_text", text: buildRolePrompt(blueprint?.meta?.scriptwriter_role, language) },
-        { type: "input_text", text: buildSceneIdeasRoleBias(blueprint?.meta?.scriptwriter_role, language) },
+        { type: "input_text", text: buildRoleBiasNotes(blueprint?.meta?.scriptwriter_role, language) },
         { type: "input_text", text: instruction }
       ]
     },

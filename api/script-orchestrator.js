@@ -6,15 +6,6 @@ const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
 
-
-function applyCors(req, res) {
-  const origin = req.headers.origin || "*";
-  res.setHeader("Access-Control-Allow-Origin", origin);
-  res.setHeader("Vary", "Origin");
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-}
-
 function getUserPayloadText(payload) {
   try {
     return JSON.stringify(payload || {}, null, 2);
@@ -31,12 +22,18 @@ function makeDebugMeta(state, extra = {}) {
   };
 }
 
-function safeParseJson(raw) {
-  try {
-    return JSON.parse(String(raw || "").trim());
-  } catch (_) {
-    return null;
-  }
+
+function buildSceneIdeasSystem(payload = {}) {
+  const role = String(payload?.blueprint?.meta?.scriptwriter_role || payload?.scriptwriter_role || "nika").trim().toLowerCase();
+
+  const rolePrompts = {
+    nika: "You are Nika, LiVi Creative Director. Prioritize concept → image → metaphor → creative hook → scene form. Start from the strongest image, not camera technique.",
+    max: "You are Max, LiVi Commercial Strategist. Prioritize problem → need → product → value → audience relevance → reveal. Think in benefit, message and product relevance before visual beauty.",
+    sara: "You are Sara, LiVi Cinematographer. Prioritize light → optics → composition → visual reveal → mood. Build the scene through visual language, frame depth and the way the image reveals itself.",
+    zhora: "You are Zhora, LiVi Film Director. Prioritize action → movement → staging → progression → payoff. Build the scene through character action, blocking and event development."
+  };
+
+  return rolePrompts[role] || rolePrompts.nika;
 }
 
 async function runOpenAI({ system, user, temperature = 0.7 }) {
@@ -65,8 +62,14 @@ export default async function handler(req, res) {
 
     if (action === "SCENE_IDEAS") {
       const raw = await runOpenAI({
-        system: "You are a cinematic scene generator for LiVi AI Scriptwriter. Return valid JSON only.",
+        system: buildSceneIdeasSystem(payload),
         user: `Create 3 cinematic scene ideas based on this payload.
+
+Important:
+- Role bias must affect decision priority and scene emphasis, not just wording.
+- If the UI constraints are identical, the broad scene vector may still overlap, but the role-specific interpretation must be clearly different.
+- For Sara, think through light, optics, composition and visual reveal before abstract message.
+- For Zhora, think through action, staging, progression and payoff before static image description.
 
 Return JSON only:
 {
@@ -171,52 +174,38 @@ ${getUserPayloadText(payload)}`,
     if (action === "FINAL_ASSEMBLY") {
       const raw = await runOpenAI({
         system: "You assemble final structured output for LiVi AI Scriptwriter. Return valid JSON only. Never return screenplay sections like SCENES, CHOICES, TRANSITIONS, VISUAL STYLE or PROMPTS.",
-        user: `Build the final structured result using Scene Blueprint as the source of truth and Result Schema as the output rule.
+        user: `Build the final structured result.
 
 STRICT RULES:
 - DO NOT return screenplay.
 - DO NOT return sections like SCENES / CHOICES / TRANSITIONS / VISUAL STYLE / PROMPTS.
 - You must return ONLY structured JSON blocks.
 - Each block must be plain text.
-- Return only blocks that are actually supported by the schema/payload.
-- No markdown.
-- No explanations outside JSON.
 
 Return JSON only:
 {
   "blocks": {
-    "preview": "...",
-    "video_overview": "...",
-    "visual_emotional_direction": "...",
-    "scene_description": "...",
-    "story_concept": "...",
-    "scene_breakdown": "...",
-    "prompt": "...",
-    "production_notes": "..."
+    "scene_preview": "...",
+    "scene_story": "...",
+    "visual_direction": "...",
+    "cinematic_prompt": "..."
   }
 }
 
 Definitions:
-- preview: short human preview of the concept and intended effect
-- video_overview: concise overview of type, goal and delivery logic
-- visual_emotional_direction: mood, light, atmosphere, palette and visual language
-- scene_description: what happens inside the scene
-- story_concept: the narrative meaning of the piece as a whole
-- scene_breakdown: production structure / beats / stages
-- prompt: generation-ready video or image prompt
-- production_notes: short professional notes on pacing, camera, edit or emphasis
+- scene_preview: short cinematic description of the scene concept
+- scene_story: what actually happens in the scene
+- visual_direction: camera / lighting / atmosphere
+- cinematic_prompt: full generation-ready prompt for video or image AI
 
 Payload:
 ${getUserPayloadText(payload)}`,
         temperature: 0.7
       });
 
-      const parsed = safeParseJson(raw);
-      const blocks = parsed && parsed.blocks && typeof parsed.blocks === "object" ? parsed.blocks : null;
+      const checked = validator.validateByAction("FINAL_ASSEMBLY", raw);
 
-      if (!blocks) {
-        console.log("FINAL_ASSEMBLY_VALIDATION_FAILED", { raw });
-
+      if (!checked.ok) {
         return res.status(200).json({
           ok: true,
           action,
@@ -227,10 +216,9 @@ ${getUserPayloadText(payload)}`,
             }
           },
           raw,
-          raw_ai_output: String(raw || "").trim(),
-          validator_errors: ["FINAL_ASSEMBLY_JSON_PARSE_FAILED_OR_BLOCKS_MISSING"],
           debug: makeDebugMeta("LEGACY_FALLBACK_TRIGGERED", {
-            reason: "FINAL_ASSEMBLY_JSON_PARSE_FAILED_OR_BLOCKS_MISSING"
+            reason: "FINAL_ASSEMBLY_VALIDATION_FAILED",
+            validator_errors: checked.errors
           })
         });
       }
@@ -238,7 +226,7 @@ ${getUserPayloadText(payload)}`,
       return res.json({
         ok: true,
         action,
-        data: { blocks },
+        data: checked.data,
         raw,
         debug: makeDebugMeta("FINAL_ASSEMBLY_OK")
       });

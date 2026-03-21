@@ -1,7 +1,4 @@
 {
   "name": "livi-ai-proxy",
-  "private": true,
-  "dependencies": {
-    "openai": "^4.104.0"
-  }
+  "private": true
 }

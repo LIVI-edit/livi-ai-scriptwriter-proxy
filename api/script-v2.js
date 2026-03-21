@@ -388,12 +388,15 @@ module.exports = async (req, res) => {
 
   try {
     const body = safeParseBody(req);
+    const payload = body.payload || {};
     const action = normalizeAction(body.action);
-    const blueprint = body.blueprint || {};
-    const uiInputs = body.uiInputs || {};
-    const resultSchema = body.resultSchema || {};
-    const userMessage = typeof body.userMessage === "string" ? body.userMessage.trim() : "";
-    const language = blueprint?.meta?.language || body.language || "ru";
+    const blueprint = body.blueprint || payload.blueprint || {};
+    const uiInputs = body.uiInputs || payload.uiInputs || {};
+    const resultSchema = body.resultSchema || payload.resultSchema || {};
+    const userMessage = typeof body.userMessage === "string"
+      ? body.userMessage.trim()
+      : (typeof payload.userMessage === "string" ? payload.userMessage.trim() : "");
+    const language = blueprint?.meta?.language || body.language || payload.language || "ru";
 
     if (!process.env.OPENAI_API_KEY) {
       return json(res, 500, { error: "Missing OPENAI_API_KEY" });
@@ -418,6 +421,16 @@ module.exports = async (req, res) => {
     }
 
     const { parsed, raw } = await callOpenAI(input);
+
+    if (action === "SCENE_IDEAS") {
+      return json(res, 200, {
+        ok: true,
+        action,
+        ideas: Array.isArray(parsed.ideas) ? parsed.ideas : [],
+        data: parsed,
+        raw
+      });
+    }
 
     return json(res, 200, {
       ok: true,

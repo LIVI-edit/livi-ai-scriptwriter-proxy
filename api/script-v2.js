@@ -176,6 +176,9 @@ function buildRefinementInput({ blueprint, userMessage, language }) {
 - Обновить сцену только там, где это логично.
 - Не пересоздавать Blueprint заново.
 - Не дублировать известные данные.
+- Считать scene_core.seed_scene уже зафиксированным источником истины сцены.
+- Не переписывать и не терять seed scene.
+- Обновлять Blueprint только patch-подходом.
 - Определить, каких данных реально не хватает.
 - Задать максимум ${questionLimit} коротких уточняющих вопроса, только если это действительно нужно.
 - Если данных уже достаточно, не задавай вопросы.
@@ -409,6 +412,9 @@ module.exports = async (req, res) => {
     } else if (action === "REFINEMENT") {
       if (!userMessage) {
         return json(res, 400, { error: "Missing userMessage for REFINEMENT" });
+      }
+      if (!blueprint?.scene_core?.seed_scene || !String(blueprint.scene_core.seed_scene).trim()) {
+        return json(res, 400, { error: "Missing scene_core.seed_scene for REFINEMENT" });
       }
       input = buildRefinementInput({ blueprint, userMessage, language });
     } else if (action === "FINAL_ASSEMBLY") {

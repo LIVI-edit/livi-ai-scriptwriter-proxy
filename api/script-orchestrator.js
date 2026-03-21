@@ -1,10 +1,35 @@
 
-import OpenAI from "openai";
-import validator from "./aiResponseValidator.js";
 
-const client = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
-});
+let __deps = null;
+
+async function loadDeps() {
+  if (__deps) return __deps;
+
+  let OpenAI;
+  let validator;
+
+  try {
+    const openaiMod = await import("openai");
+    OpenAI = openaiMod.default;
+  } catch (err) {
+    throw new Error("OPENAI_IMPORT_FAILED: " + (err?.message || String(err)));
+  }
+
+  try {
+    const validatorMod = await import("./aiResponseValidator.js");
+    validator = validatorMod.default;
+  } catch (err) {
+    throw new Error("VALIDATOR_IMPORT_FAILED: " + (err?.message || String(err)));
+  }
+
+  const client = new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY
+  });
+
+  __deps = { client, validator };
+  return __deps;
+}
+
 
 function getUserPayloadText(payload) {
   try {
@@ -37,6 +62,7 @@ function buildSceneIdeasSystem(payload = {}) {
 }
 
 async function runOpenAI({ system, user, temperature = 0.7 }) {
+  const { client } = await loadDeps();
   const completion = await client.chat.completions.create({
     model: "gpt-4o-mini",
     temperature,
@@ -51,11 +77,21 @@ async function runOpenAI({ system, user, temperature = 0.7 }) {
 }
 
 export default async function handler(req, res) {
+  if (req.method === "GET") {
+    return res.status(200).json({
+      ok: true,
+      route: "script-orchestrator",
+      method: "GET",
+      debug: makeDebugMeta("HEALTHCHECK_OK")
+    });
+  }
+
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
   try {
+    const { validator } = await loadDeps();
     const body = req.body || {};
     const action = String(body.action || "SCENE_IDEAS").trim().toUpperCase();
     const payload = body.payload || {};

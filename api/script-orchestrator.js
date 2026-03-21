@@ -1,18 +1,6 @@
 
 import OpenAI from "openai";
-
-// STUB VALIDATOR (safe bypass, preserves layer)
-const validator = {
-  validateByAction(action, raw){
-    try{
-      const parsed = JSON.parse(raw);
-      return { ok: true, data: parsed };
-    }catch(e){
-      return { ok: false, errors: ["INVALID_JSON"], raw };
-    }
-  }
-};
-
+import validator from "./aiResponseValidator.js";
 
 const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY

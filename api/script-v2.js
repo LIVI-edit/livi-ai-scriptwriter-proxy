@@ -40,6 +40,96 @@ function normalizeStage(stage) {
 }
 
 
+function isWeakConfirmationMessage(message) {
+  const text = String(message || "").trim().toLowerCase();
+  if (!text) return true;
+  return ["ok", "okay", "ок", "да", "yes", "ага", "пойдет", "пойдёт", "go", "build", "далее", "дальше"].includes(text);
+}
+
+function getCriticalAnchorOptions(language = "ru") {
+  const ru = {
+    "goal.audience": [
+      "маркетологи и performance-специалисты",
+      "контент-команды и копирайтеры",
+      "малый бизнес / founders"
+    ],
+    "marketing_layer.message": [
+      "экономия времени",
+      "повышение качества",
+      "быстрое превращение идеи в структуру"
+    ],
+    "marketing_layer.product_focus": [
+      "AI-генерация сценария",
+      "помощь в структурировании",
+      "ускорение работы команды"
+    ],
+    "marketing_layer.cta": [
+      "попробовать сейчас",
+      "ускорить производство контента",
+      "вывести качество маркетинга на новый уровень"
+    ]
+  };
+  const en = {
+    "goal.audience": [
+      "marketers and performance specialists",
+      "content teams and copywriters",
+      "small business / founders"
+    ],
+    "marketing_layer.message": [
+      "save time",
+      "improve quality",
+      "turn an idea into structure fast"
+    ],
+    "marketing_layer.product_focus": [
+      "AI script generation",
+      "help with structuring",
+      "speed up team workflow"
+    ],
+    "marketing_layer.cta": [
+      "try it now",
+      "speed up content production",
+      "raise marketing quality"
+    ]
+  };
+  return language === "en" ? en : ru;
+}
+
+function getHumanAnchorLabel(path, language = "ru") {
+  const labels = {
+    "goal.audience": language === "en" ? "audience" : "аудитория",
+    "marketing_layer.message": language === "en" ? "core message" : "основной посыл",
+    "marketing_layer.product_focus": language === "en" ? "product focus" : "продуктовый акцент",
+    "marketing_layer.cta": language === "en" ? "CTA" : "CTA"
+  };
+  return labels[path] || path;
+}
+
+function buildCriticalAnchorPromptMessage(blueprint, missingPaths, language = "ru") {
+  const optionsMap = getCriticalAnchorOptions(language);
+  const intro = language === "en"
+    ? "To move honestly through refinement, I still need to lock a few critical anchors. Here are short options you can choose from or rewrite in your own words:"
+    : "Чтобы честно пройти refinement дальше, мне нужно зафиксировать ещё несколько критичных якорей. Вот короткие варианты, из которых можно выбрать или переформулировать своими словами:";
+  const blocks = (missingPaths || []).slice(0, 2).map((path) => {
+    const options = (optionsMap[path] || []).slice(0, 3);
+    if (!options.length) return null;
+    return `${getHumanAnchorLabel(path, language)}:
+- ${options.join("\n- ")}`;
+  }).filter(Boolean);
+  const outro = language === "en"
+    ? 'Reply with the exact option or rewrite it briefly in your own words. A simple "ok" is not enough here.'
+    : 'Ответь точным вариантом или коротко сформулируй своё. Простое "ок" здесь не закрывает этот слой.';
+  return [intro].concat(blocks).concat([outro]).join("\n\n").trim();
+}
+function stripCriticalAnchorAutofill(patch, userMessage, language = "ru") {
+  const next = patch && typeof patch === "object" ? { ...patch } : {};
+  if (!isWeakConfirmationMessage(userMessage)) return next;
+  ["goal.audience", "marketing_layer.message", "marketing_layer.product_focus", "marketing_layer.cta"].forEach((path) => {
+    if (Object.prototype.hasOwnProperty.call(next, path)) delete next[path];
+  });
+  return next;
+}
+
+
 function hasCommercialGoalContext(blueprint) {
   const videoType = String(blueprint?.meta?.video_type || "").trim().toLowerCase();
   if (videoType === "promo") return true;
@@ -54,13 +144,24 @@ function getCriticalAlignmentMissingFromState(blueprint, patch = {}) {
     "marketing_layer.message",
     "marketing_layer.product_focus"
   ];
-  return candidates.filter((path) => {
+  const missing = candidates.filter((path) => {
     const currentValue = path.split('.').reduce((acc, key) => (acc == null ? undefined : acc[key]), blueprint || {});
     const patchedValue = Object.prototype.hasOwnProperty.call(patch || {}, path) ? patch[path] : undefined;
     const finalValue = patchedValue !== undefined ? patchedValue : currentValue;
     if (Array.isArray(finalValue)) return finalValue.length === 0;
     return !(typeof finalValue === 'string' ? finalValue.trim() : finalValue);
   });
+
+  const patchedMessage = Object.prototype.hasOwnProperty.call(patch || {}, "marketing_layer.message") ? patch["marketing_layer.message"] : undefined;
+  const patchedFocus = Object.prototype.hasOwnProperty.call(patch || {}, "marketing_layer.product_focus") ? patch["marketing_layer.product_focus"] : undefined;
+  const effectiveMessage = patchedMessage !== undefined ? patchedMessage : blueprint?.marketing_layer?.message;
+  const effectiveFocus = patchedFocus !== undefined ? patchedFocus : blueprint?.marketing_layer?.product_focus;
+  const hasCommercialFrame = !!String(effectiveMessage || '').trim() || !!String(effectiveFocus || '').trim();
+  const patchedCta = Object.prototype.hasOwnProperty.call(patch || {}, "marketing_layer.cta") ? patch["marketing_layer.cta"] : undefined;
+  const effectiveCta = patchedCta !== undefined ? patchedCta : blueprint?.marketing_layer?.cta;
+  if (hasCommercialFrame && !String(effectiveCta || '').trim()) missing.push("marketing_layer.cta");
+
+  return Array.from(new Set(missing));
 }
 
 function getContextTextForBias(blueprint) {
@@ -74,8 +175,8 @@ function getContextTextForBias(blueprint) {
   ].map((value) => String(value || '').trim()).filter(Boolean).join('\n').toLowerCase();
 }
 
-function sanitizeRefinementPatch(patch, blueprint) {
-  const next = patch && typeof patch === 'object' ? { ...patch } : {};
+function sanitizeRefinementPatch(patch, blueprint, userMessage = "", language = "ru") {
+  let next = patch && typeof patch === 'object' ? { ...patch } : {};
   const contextText = getContextTextForBias(blueprint);
   const allowLiviContext = /livi|scriptwriter/.test(contextText);
   if (!allowLiviContext) {
@@ -84,6 +185,7 @@ function sanitizeRefinementPatch(patch, blueprint) {
       if (value && /livi|scriptwriter/i.test(value)) delete next[path];
     });
   }
+  next = stripCriticalAnchorAutofill(next, userMessage, language);
   return next;
 }
 
@@ -875,22 +977,30 @@ async function callOpenAI(input) {
   return { raw, parsed: JSON.parse(raw) };
 }
 
-function normalizeRefinementResult(parsed, currentStage, blueprint) {
+function normalizeRefinementResult(parsed, currentStage, blueprint, userMessage = "", language = "ru") {
   const data = parsed && typeof parsed === "object" ? { ...parsed } : {};
-  data.patch = sanitizeRefinementPatch(data.patch, blueprint);
+  data.patch = sanitizeRefinementPatch(data.patch, blueprint, userMessage, language);
   const stage = normalizeStage(currentStage);
   const normalizedStage = String(data.response_stage || "").trim().toLowerCase();
+  const criticalMissing = getCriticalAlignmentMissingFromState(blueprint, data.patch);
 
   if (stage === "development") {
     data.response_stage = normalizedStage || "development";
     data.ready_hint = false;
+    if (criticalMissing.length) {
+      data.message = buildCriticalAnchorPromptMessage(blueprint, criticalMissing, language);
+      data.questions = [];
+    }
     return data;
   }
 
-  const criticalMissing = getCriticalAlignmentMissingFromState(blueprint, data.patch);
   if (criticalMissing.length) {
     data.ready_hint = false;
     data.response_stage = "refinement";
+    if (isWeakConfirmationMessage(userMessage) || !String(data.message || "").trim()) {
+      data.message = buildCriticalAnchorPromptMessage(blueprint, criticalMissing, language);
+      data.questions = [];
+    }
   } else if (data.ready_hint === true) {
     data.response_stage = "alignment";
   } else {
@@ -996,7 +1106,7 @@ module.exports = async (req, res) => {
 
     const { parsed, raw } = await callOpenAI(input);
     let normalizedParsed = action === "REFINEMENT"
-      ? normalizeRefinementResult(parsed, blueprint?.system_state?.current_stage, blueprint)
+      ? normalizeRefinementResult(parsed, blueprint?.system_state?.current_stage, blueprint, userMessage, language)
       : (action === "POST_CHAT"
           ? normalizePostChatResult(parsed, userMessage, body.deliverableBlocks || payload.deliverableBlocks || {}, language)
           : parsed);

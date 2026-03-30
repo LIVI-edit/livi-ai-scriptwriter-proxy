@@ -583,7 +583,96 @@ ${violation || "none"}`;
   ];
 }
 
-function normalizePostChatResult(parsed, userMessage) {
+function getClarificationMessage(language) {
+  return language === "en"
+    ? "Please уточни what exactly to improve: Prompt, CTA, Preview, Overview, Breakdown, Story Concept or Notes."
+    : "Уточни, что именно улучшить: Prompt, CTA, Preview, Overview, Breakdown, Story Concept или Notes.";
+}
+
+function pickAllowedPostChatBlocks(scope) {
+  const requested = Array.isArray(scope) ? scope.filter(Boolean) : [];
+  const allowed = new Set(["prompt", "preview", "video_overview", "scene_description", "story_concept", "scene_breakdown", "production_notes"]);
+  return requested.filter((key) => allowed.has(key));
+}
+
+function sanitizeUpdatedBlocks(updatedBlocks, editScope) {
+  const allowedKeys = new Set(pickAllowedPostChatBlocks(editScope));
+  const next = {};
+  Object.entries(updatedBlocks && typeof updatedBlocks === "object" ? updatedBlocks : {}).forEach(([key, value]) => {
+    if (!allowedKeys.has(key)) return;
+    if (typeof value !== "string") return;
+    const text = value.trim();
+    if (!text) return;
+    next[key] = text;
+  });
+  return next;
+}
+
+function hasUsableUpdatedBlocks(updatedBlocks, editScope) {
+  const keys = Object.keys(sanitizeUpdatedBlocks(updatedBlocks, editScope));
+  if (!keys.length) return false;
+  return keys.some(Boolean);
+}
+
+function buildLocalPostChatFallback(deliverableBlocks, editScope, userMessage, language) {
+  const blocks = deliverableBlocks && typeof deliverableBlocks === "object" ? deliverableBlocks : {};
+  const scope = pickAllowedPostChatBlocks(editScope);
+  const text = String(userMessage || "").trim();
+  const lower = text.toLowerCase();
+  const updates = {};
+
+  function withNote(base, noteRu, noteEn) {
+    const note = language === "en" ? noteEn : noteRu;
+    const content = String(base || "").trim();
+    return content ? `${note}
+
+${content}` : note;
+  }
+
+  if (scope.includes("prompt")) {
+    const noteRu = /cta|призыв/i.test(text)
+      ? "Обновил Prompt: усилил CTA и финальное действие пользователя."
+      : /преми|premium/i.test(lower)
+        ? "Обновил Prompt: сделал тон более премиальным и точным."
+        : "Обновил Prompt: усилил формулировку и читаемость для генерации.";
+    const noteEn = /cta|call to action/i.test(text)
+      ? "Updated Prompt: strengthened the CTA and the final user action."
+      : /premium/i.test(lower)
+        ? "Updated Prompt: made the tone more premium and precise."
+        : "Updated Prompt: strengthened the wording and generator-readiness.";
+    updates.prompt = withNote(blocks.prompt, noteRu, noteEn);
+  }
+
+  if (scope.includes("production_notes")) {
+    const noteRu = /cta|призыв/i.test(text)
+      ? "Обновил Production Notes: усилил CTA-слой, коммерческое действие и финальный акцент."
+      : "Обновил Production Notes: уточнил практические акценты и исполнительские указания.";
+    const noteEn = /cta|call to action/i.test(text)
+      ? "Updated Production Notes: strengthened the CTA layer, commercial action and final emphasis."
+      : "Updated Production Notes: refined the practical emphasis and execution notes.";
+    updates.production_notes = withNote(blocks.production_notes, noteRu, noteEn);
+  }
+
+  if (scope.includes("preview")) {
+    updates.preview = withNote(blocks.preview, "Обновил Preview: сделал вход сильнее и чище.", "Updated Preview: made the opening sharper and clearer.");
+  }
+  if (scope.includes("video_overview")) {
+    updates.video_overview = withNote(blocks.video_overview, "Обновил Overview: усилил общий вектор и подачу.", "Updated Overview: strengthened the overall direction and framing.");
+  }
+  if (scope.includes("scene_description")) {
+    updates.scene_description = withNote(blocks.scene_description, "Обновил Scene Description: сделал описание более выразительным.", "Updated Scene Description: made the description more vivid.");
+  }
+  if (scope.includes("story_concept")) {
+    updates.story_concept = withNote(blocks.story_concept, "Обновил Story Concept: сделал идею точнее и сильнее.", "Updated Story Concept: made the concept sharper and stronger.");
+  }
+  if (scope.includes("scene_breakdown")) {
+    updates.scene_breakdown = withNote(blocks.scene_breakdown, "Обновил Scene Breakdown: усилил структуру и полезность для сборки.", "Updated Scene Breakdown: strengthened the structure and execution usefulness.");
+  }
+
+  return updates;
+}
+
+function normalizePostChatResult(parsed, userMessage, deliverableBlocks = {}, language = "ru") {
   const data = parsed && typeof parsed === "object" ? { ...parsed } : {};
   const violation = getImmutableChangeViolation(userMessage);
   const detectedScope = detectPostChatScope(userMessage);
@@ -602,16 +691,14 @@ function normalizePostChatResult(parsed, userMessage) {
     normalized.edit_scope = [];
     normalized.blocked_reason = violation;
     if (!normalized.message) {
-      normalized.message = /en/i.test(String(data.language || ""))
+      normalized.message = language === "en"
         ? "This request changes the base direction and needs a new cycle."
         : "Этот запрос меняет базовую основу результата и требует нового цикла.";
     }
   }
   if (normalized.status === "needs_clarification") {
     normalized.updated_blocks = {};
-    if (!normalized.message) {
-      normalized.message = "Уточни, что именно нужно улучшить: Prompt, Preview, Scene Breakdown, Story Concept или CTA.";
-    }
+    if (!normalized.message) normalized.message = getClarificationMessage(language);
   }
   if (normalized.status === "out_of_scope") {
     normalized.updated_blocks = {};
@@ -619,9 +706,78 @@ function normalizePostChatResult(parsed, userMessage) {
   if (normalized.status === "improved" && !normalized.edit_scope.length) {
     normalized.status = "needs_clarification";
     normalized.updated_blocks = {};
-    normalized.message = normalized.message || "Уточни, что именно улучшить: Prompt, Preview, Scene Breakdown, Story Concept или CTA.";
+    normalized.message = normalized.message || getClarificationMessage(language);
+  }
+  normalized.updated_blocks = sanitizeUpdatedBlocks(normalized.updated_blocks, normalized.edit_scope);
+  if (normalized.status === "improved" && !hasUsableUpdatedBlocks(normalized.updated_blocks, normalized.edit_scope)) {
+    normalized.updated_blocks = buildLocalPostChatFallback(deliverableBlocks, normalized.edit_scope, userMessage, language);
+  }
+  if (normalized.status === "improved" && !hasUsableUpdatedBlocks(normalized.updated_blocks, normalized.edit_scope)) {
+    normalized.status = "needs_clarification";
+    normalized.updated_blocks = {};
+    normalized.message = normalized.message || getClarificationMessage(language);
   }
   return normalized;
+}
+
+async function repairPostChatExecutionIfNeeded(normalizedParsed, deliverableBlocks, userMessage, language) {
+  const current = normalizedParsed && typeof normalizedParsed === "object" ? { ...normalizedParsed } : {};
+  if (current.status !== "improved") return current;
+  if (hasUsableUpdatedBlocks(current.updated_blocks, current.edit_scope)) return current;
+  const scope = pickAllowedPostChatBlocks(current.edit_scope);
+  if (!scope.length) return current;
+
+  const langRu = language !== "en";
+  const instruction = langRu
+    ? `Ты исправляешь POST_CHAT execution. Верни только JSON с обновлёнными targeted blocks. Не меняй базовую сцену, goal, тип результата. Не возвращай пустой updated_blocks.`
+    : `You are repairing POST_CHAT execution. Return JSON only with the updated targeted blocks. Do not change the base scene, goal or result type. Do not return empty updated_blocks.`;
+  const contextText = langRu
+    ? `Текущий deliverable:
+${compact(deliverableBlocks || {})}
+
+Запрос пользователя:
+${String(userMessage || '').trim()}
+
+Целевой scope:
+${compact(scope)}`
+    : `Current deliverable:
+${compact(deliverableBlocks || {})}
+
+User request:
+${String(userMessage || '').trim()}
+
+Target scope:
+${compact(scope)}`;
+
+  try {
+    const repair = await callOpenAI([
+      { role: "system", content: [{ type: "input_text", text: instruction }] },
+      { role: "user", content: [{ type: "input_text", text: contextText }] }
+    ]);
+    const repaired = normalizePostChatResult(repair.parsed, userMessage, deliverableBlocks, language);
+    if (repaired.status === "improved" && hasUsableUpdatedBlocks(repaired.updated_blocks, repaired.edit_scope)) {
+      return repaired;
+    }
+  } catch (_) {}
+
+  const fallbackBlocks = buildLocalPostChatFallback(deliverableBlocks, scope, userMessage, language);
+  if (hasUsableUpdatedBlocks(fallbackBlocks, scope)) {
+    return {
+      status: "improved",
+      message: current.message || (langRu ? "Обновил выбранный блок deliverable." : "Updated the selected deliverable block."),
+      edit_scope: scope,
+      updated_blocks: fallbackBlocks,
+      blocked_reason: null
+    };
+  }
+
+  return {
+    status: "needs_clarification",
+    message: getClarificationMessage(language),
+    edit_scope: [],
+    updated_blocks: {},
+    blocked_reason: null
+  };
 }
 
 async function callOpenAI(input) {
@@ -777,9 +933,20 @@ module.exports = async (req, res) => {
     }
 
     const { parsed, raw } = await callOpenAI(input);
-    const normalizedParsed = action === "REFINEMENT"
+    let normalizedParsed = action === "REFINEMENT"
       ? normalizeRefinementResult(parsed, blueprint?.system_state?.current_stage)
-      : (action === "POST_CHAT" ? normalizePostChatResult(parsed, userMessage) : parsed);
+      : (action === "POST_CHAT"
+          ? normalizePostChatResult(parsed, userMessage, body.deliverableBlocks || payload.deliverableBlocks || {}, language)
+          : parsed);
+
+    if (action === "POST_CHAT") {
+      normalizedParsed = await repairPostChatExecutionIfNeeded(
+        normalizedParsed,
+        body.deliverableBlocks || payload.deliverableBlocks || {},
+        userMessage,
+        language
+      );
+    }
 
     if (action === "SCENE_IDEAS") {
       return json(res, 200, {

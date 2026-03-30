@@ -39,6 +39,54 @@ function normalizeStage(stage) {
   return value || "start";
 }
 
+
+function hasCommercialGoalContext(blueprint) {
+  const videoType = String(blueprint?.meta?.video_type || "").trim().toLowerCase();
+  if (videoType === "promo") return true;
+  const goal = String(blueprint?.goal?.video_goal || "").trim().toLowerCase();
+  return ["product", "service", "brand", "promotion", "promo", "ad", "presentation", "pitch", "commercial"].some((token) => goal.includes(token));
+}
+
+function getCriticalAlignmentMissingFromState(blueprint, patch = {}) {
+  if (!hasCommercialGoalContext(blueprint)) return [];
+  const candidates = [
+    "goal.audience",
+    "marketing_layer.message",
+    "marketing_layer.product_focus"
+  ];
+  return candidates.filter((path) => {
+    const currentValue = path.split('.').reduce((acc, key) => (acc == null ? undefined : acc[key]), blueprint || {});
+    const patchedValue = Object.prototype.hasOwnProperty.call(patch || {}, path) ? patch[path] : undefined;
+    const finalValue = patchedValue !== undefined ? patchedValue : currentValue;
+    if (Array.isArray(finalValue)) return finalValue.length === 0;
+    return !(typeof finalValue === 'string' ? finalValue.trim() : finalValue);
+  });
+}
+
+function getContextTextForBias(blueprint) {
+  return [
+    blueprint?.goal?.user_request_summary,
+    blueprint?.system_state?.last_user_message,
+    blueprint?.scene_core?.seed_scene,
+    blueprint?.scene_core?.main_focus,
+    blueprint?.marketing_layer?.message,
+    blueprint?.marketing_layer?.product_focus,
+  ].map((value) => String(value || '').trim()).filter(Boolean).join('\n').toLowerCase();
+}
+
+function sanitizeRefinementPatch(patch, blueprint) {
+  const next = patch && typeof patch === 'object' ? { ...patch } : {};
+  const contextText = getContextTextForBias(blueprint);
+  const allowLiviContext = /livi|scriptwriter/.test(contextText);
+  if (!allowLiviContext) {
+    ["goal.user_request_summary", "scene_core.main_focus", "marketing_layer.message", "marketing_layer.product_focus"].forEach((path) => {
+      const value = String(next[path] || '').trim();
+      if (value && /livi|scriptwriter/i.test(value)) delete next[path];
+    });
+  }
+  return next;
+}
+
 function buildRolePrompt(role, language = "ru") {
   const langRu = language !== "en";
 
@@ -175,11 +223,13 @@ function buildRefinementInstruction(stage, questionLimit, language) {
 
 Задача:
 - Принять уже выбранную сцену как зафиксированную основу.
-- Дать одно короткое человеческое развитие сцены.
+- В message обязательно: 1) коротко подтвердить, какая сцена выбрана; 2) коротко объяснить, почему это сильный вектор; 3) показать, что именно нужно добрать дальше, если чего-то реально не хватает.
 - Не открывать новые 3 сцены.
 - Не давать локальный фейковый финал.
-- Мягко повести пользователя к следующему обязательному шагу.
-- При необходимости задай максимум 1 короткий уточняющий вопрос.
+- Не закрывать автоматически missing anchors своей интерпретацией.
+- Не делать Alignment на этом шаге.
+- Если не хватает критически важного слоя, предложи 2–3 коротких варианта добора прямо в message человеческим языком.
+- questions использовать только если без короткого вопроса нельзя, максимум 1.
 
 Верни ТОЛЬКО JSON:
 {
@@ -194,7 +244,7 @@ function buildRefinementInstruction(stage, questionLimit, language) {
 
 Правила:
 - message обязателен.
-- message должен быть коротким живым development-ответом.
+- message должен быть живым development-ответом, а не сухим recap.
 - Не обещай final assembly.
 - Не делай Alignment на этом шаге.
 - patch содержит только реально уточнённые поля.
@@ -206,11 +256,13 @@ You are in the DEVELOPMENT stage.
 
 Task:
 - Treat the selected scene as the locked foundation.
-- Give one short human development step for the scene.
+- In message, do 3 things: 1) briefly confirm which scene was chosen; 2) briefly explain why it is a strong direction; 3) show what still needs to be strengthened if anything meaningful is missing.
 - Do not open 3 new scene ideas.
 - Do not output a fake local final.
-- Softly guide the user to the next required step.
-- If needed, ask at most 1 short clarifying question.
+- Do not auto-close missing anchors with pure interpretation.
+- Do not perform Alignment at this step.
+- If a meaningful layer is still missing, offer 2–3 short completion options directly inside message in human language.
+- Use questions only if one short question is truly necessary.
 
 Return JSON only:
 {
@@ -227,7 +279,7 @@ Return JSON only:
 Rules:
 - message is required.
 - response_stage must be "development".
-- message must be a short, human development reply.
+- message must be a live human development reply, not a dry recap.
 - Do not promise final assembly here.
 - Do not perform Alignment at this step.
 - patch contains only truly refined fields.
@@ -249,8 +301,11 @@ Rules:
 - Не переписывать и не терять seed scene.
 - Обновлять Blueprint только patch-подходом.
 - Определить, каких данных реально не хватает.
+- Если не хватает audience / core message / product focus / CTA / value, нельзя просто додумать всё самому из атмосферы сцены.
+- Если не хватает важных данных, message должен явно показать, чего не хватает, и предложить 2–3 коротких варианта добора.
+- Не переводи систему в Alignment, пока критичные missing anchors ещё живы.
 - Задать максимум ${questionLimit} коротких уточняющих вопроса, только если это действительно нужно.
-- Если данных уже достаточно, не задавай новые вопросы, а выдай Alignment как короткое человеческое подтверждение перед Build.
+- Разрешается отдавать Alignment только когда каркас реально достаточен, а не просто красиво интерпретирован.
 
 Верни ТОЛЬКО JSON:
 {
@@ -268,6 +323,8 @@ Rules:
 Правила:
 - patch должен содержать только новые или уточнённые поля.
 - Не включай поля, если не хочешь их менять.
+- Не заполняй goal.audience, marketing_layer.message, marketing_layer.product_focus и marketing_layer.cta чистой фантазией, если пользователь этого ещё не задал напрямую или очень явно.
+- Не считай по умолчанию, что видео про LiVi AI Scriptwriter или сам продукт LiVi, если это не следует из контекста пользователя.
 - message обязателен.
 - Если ready_hint=false, response_stage должен быть "refinement", а message должен быть refinement-ответом и не заменять Alignment.
 - Если ready_hint=true, response_stage должен быть "alignment", а message должен быть именно Alignment: коротко объясни, как система поняла задачу, какие решения зафиксированы и что теперь можно нажать Build для финальной сборки.
@@ -818,8 +875,9 @@ async function callOpenAI(input) {
   return { raw, parsed: JSON.parse(raw) };
 }
 
-function normalizeRefinementResult(parsed, currentStage) {
+function normalizeRefinementResult(parsed, currentStage, blueprint) {
   const data = parsed && typeof parsed === "object" ? { ...parsed } : {};
+  data.patch = sanitizeRefinementPatch(data.patch, blueprint);
   const stage = normalizeStage(currentStage);
   const normalizedStage = String(data.response_stage || "").trim().toLowerCase();
 
@@ -829,7 +887,11 @@ function normalizeRefinementResult(parsed, currentStage) {
     return data;
   }
 
-  if (data.ready_hint === true) {
+  const criticalMissing = getCriticalAlignmentMissingFromState(blueprint, data.patch);
+  if (criticalMissing.length) {
+    data.ready_hint = false;
+    data.response_stage = "refinement";
+  } else if (data.ready_hint === true) {
     data.response_stage = "alignment";
   } else {
     data.response_stage = normalizedStage || "refinement";
@@ -934,7 +996,7 @@ module.exports = async (req, res) => {
 
     const { parsed, raw } = await callOpenAI(input);
     let normalizedParsed = action === "REFINEMENT"
-      ? normalizeRefinementResult(parsed, blueprint?.system_state?.current_stage)
+      ? normalizeRefinementResult(parsed, blueprint?.system_state?.current_stage, blueprint)
       : (action === "POST_CHAT"
           ? normalizePostChatResult(parsed, userMessage, body.deliverableBlocks || payload.deliverableBlocks || {}, language)
           : parsed);

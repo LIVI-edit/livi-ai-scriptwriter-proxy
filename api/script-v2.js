@@ -79,6 +79,12 @@ function buildRoleBiasNotes(role, language = "ru") {
   return notes[String(role || "").toLowerCase()] || notes.nika;
 }
 
+function buildTopicGuard(language = "ru") {
+  return language !== "en"
+    ? "Важный guardrail: проект пользователя может быть о чём угодно. LiVi AI Scriptwriter — это только рабочая среда, а не тема ролика по умолчанию. Не подставляй LiVi, AI Scriptwriter, product demo редактора или внутренний продуктовый контекст, если пользователь сам этого не дал. goal.video_goal, goal.user_request_summary, scene_core.main_focus и marketing_layer.message должны выводиться только из UI inputs, выбранной сцены, уточнений пользователя и твоей интерпретации этой сцены."
+    : "Important guardrail: the user's project can be about anything. LiVi AI Scriptwriter is only the working environment, not the default topic of the video. Do not inject LiVi, AI Scriptwriter, editor product demo, or any internal product context unless the user explicitly gave it. goal.video_goal, goal.user_request_summary, scene_core.main_focus, and marketing_layer.message must be derived only from UI inputs, the selected scene, user refinements, and your interpretation of that scene.";
+}
+
 function buildSceneIdeasInput({ blueprint, uiInputs, language }) {
   const langRu = language !== "en";
 
@@ -99,6 +105,7 @@ function buildSceneIdeasInput({ blueprint, uiInputs, language }) {
 Требования:
 - Каждая идея: short_title, scene_text, why_it_works.
 - Сцены должны различаться по углу подачи.
+- Не подставляй тему LiVi / AI Scriptwriter, если пользователь сам её не задал.
 - Ответ верни ТОЛЬКО как JSON.
 - Без markdown.
 - Без пояснений до и после JSON.
@@ -129,6 +136,7 @@ Requirements:
 - Each idea: short_title, scene_text, why_it_works.
 - The three ideas must differ in angle.
 - Role bias must change decision priority, interpretation and scene emphasis, not just wording.
+- Do not inject LiVi / AI Scriptwriter as the topic unless the user explicitly made it the topic.
 - If user constraints are the same, the broad scene vector may still overlap, but the role-specific reasoning focus must be clearly different.
 - Return JSON only.
 - No markdown.
@@ -150,6 +158,7 @@ JSON format:
       content: [
         { type: "input_text", text: buildRolePrompt(blueprint?.meta?.scriptwriter_role, language) },
         { type: "input_text", text: buildRoleBiasNotes(blueprint?.meta?.scriptwriter_role, language) },
+        { type: "input_text", text: buildTopicGuard(language) },
         { type: "input_text", text: instruction }
       ]
     },
@@ -175,28 +184,34 @@ function buildRefinementInstruction(stage, questionLimit, language) {
 
 Задача:
 - Принять уже выбранную сцену как зафиксированную основу.
-- Дать одно короткое человеческое развитие сцены.
-- Не открывать новые 3 сцены.
-- Не давать локальный фейковый финал.
-- Мягко повести пользователя к следующему обязательному шагу.
-- При необходимости задай максимум 1 короткий уточняющий вопрос.
+- Дать живой development-response, а не сухую техническую реплику.
+- Сначала коротко подтверди, какая сцена выбрана.
+- Затем коротко объясни, почему это сильный вектор.
+- Затем мягко покажи, чего ещё не хватает для усиления сцены.
+- Если нужен следующий шаг, предложи 2–3 конкретных направления добора, а не общий вопрос в воздух.
+- Не открывай новые 3 сцены.
+- Не давай локальный фейковый финал.
+- Не делай Alignment на этом шаге.
 
 Верни ТОЛЬКО JSON:
 {
   "patch": {
     "scene_core.concept_line": "...",
-    "narrative.scene_development": "..."
+    "narrative.scene_development": "...",
+    "scene_core.core_event": "..."
   },
   "questions": ["..."],
   "message": "...",
+  "response_stage": "development",
   "ready_hint": false
 }
 
 Правила:
 - message обязателен.
-- message должен быть коротким живым development-ответом.
+- response_stage должен быть "development".
+- message = 3 коротких части: подтверждение выбора → почему сцена работает → что лучше добрать дальше.
+- Если предлагаешь следующий шаг, делай это как 2–3 конкретных варианта: CTA, фокус аудитории, стиль подачи, ключевая выгода, характер героя, локация, развитие сцены и т.п.
 - Не обещай final assembly.
-- Не делай Alignment на этом шаге.
 - patch содержит только реально уточнённые поля.
 - Без markdown.
 - Без пояснений.
@@ -206,17 +221,21 @@ You are in the DEVELOPMENT stage.
 
 Task:
 - Treat the selected scene as the locked foundation.
-- Give one short human development step for the scene.
+- Produce a live development response, not a dry technical line.
+- First briefly confirm which scene was selected.
+- Then briefly explain why it is a strong direction.
+- Then show what is still worth adding to strengthen the scene.
+- If a next step is needed, offer 2–3 concrete fill directions instead of one vague question.
 - Do not open 3 new scene ideas.
 - Do not output a fake local final.
-- Softly guide the user to the next required step.
-- If needed, ask at most 1 short clarifying question.
+- Do not perform Alignment at this step.
 
 Return JSON only:
 {
   "patch": {
     "scene_core.concept_line": "...",
-    "narrative.scene_development": "..."
+    "narrative.scene_development": "...",
+    "scene_core.core_event": "..."
   },
   "questions": ["..."],
   "message": "...",
@@ -227,9 +246,9 @@ Return JSON only:
 Rules:
 - message is required.
 - response_stage must be "development".
-- message must be a short, human development reply.
+- message should have 3 short parts: selection confirmation → why it works → what to add next.
+- If you suggest the next step, offer 2–3 concrete options such as CTA, audience focus, delivery style, key benefit, character role, location, or scene progression.
 - Do not promise final assembly here.
-- Do not perform Alignment at this step.
 - patch contains only truly refined fields.
 - No markdown.
 - No explanations.
@@ -249,15 +268,18 @@ Rules:
 - Не переписывать и не терять seed scene.
 - Обновлять Blueprint только patch-подходом.
 - Определить, каких данных реально не хватает.
-- Задать максимум ${questionLimit} коротких уточняющих вопроса, только если это действительно нужно.
-- Если данных уже достаточно, не задавай новые вопросы, а выдай Alignment как короткое человеческое подтверждение перед Build.
+- Если чего-то не хватает, не ограничивайся общей фразой: коротко покажи, чего именно не хватает, и предложи 2–3 конкретных варианта, как это добрать.
+- Эти варианты должны быть практичными: CTA, фокус аудитории, стиль подачи, ключевая выгода, главный герой, локация, развитие сцены, message и т.д.
+- Задать максимум ${questionLimit} коротких уточняющих вопросов только если это действительно нужно.
+- Если minimum usable каркас уже собран, не жди пустого ok: выдай Alignment как короткое человеческое подтверждение перед Build.
 
 Верни ТОЛЬКО JSON:
 {
   "patch": {
     "scene_core.core_event": "...",
     "participants.main_character": "...",
-    "environment.location": "..."
+    "environment.location": "...",
+    "marketing_layer.message": "..."
   },
   "questions": ["..."],
   "message": "...",
@@ -269,8 +291,8 @@ Rules:
 - patch должен содержать только новые или уточнённые поля.
 - Не включай поля, если не хочешь их менять.
 - message обязателен.
-- Если ready_hint=false, response_stage должен быть "refinement", а message должен быть refinement-ответом и не заменять Alignment.
-- Если ready_hint=true, response_stage должен быть "alignment", а message должен быть именно Alignment: коротко объясни, как система поняла задачу, какие решения зафиксированы и что теперь можно нажать Build для финальной сборки.
+- Если ready_hint=false, response_stage должен быть "refinement", а message должен быть refinement-ответом, который явно показывает недостающие якоря сцены и 2–3 конкретных варианта добора.
+- Если ready_hint=true, response_stage должен быть "alignment", а message должен быть именно Alignment: коротко объясни, как система поняла задачу, какие решения зафиксированы, что каркас готов, что дальше нужно нажать Build для финальной сборки и что после Build останется возможность точечной доработки.
 - Нельзя запускать Final Assembly внутри этого этапа.
 - Не возвращай markdown.
 - Не возвращай объяснения.
@@ -287,15 +309,18 @@ Task:
 - Do not overwrite or lose the seed scene.
 - Update the Blueprint only via patch logic.
 - Determine what is still truly missing.
+- If something is missing, do not hide behind a generic line: state what is missing and offer 2–3 concrete fill options.
+- Those options must be practical: CTA, audience focus, delivery style, key benefit, main character, location, scene progression, message, etc.
 - Ask at most ${questionLimit} short clarifying questions only if needed.
-- If there is already enough information, ask no new questions and output Alignment as a short human confirmation before Build.
+- If the minimum usable frame is already assembled, do not wait for a meaningless “ok”: output Alignment as a short human confirmation before Build.
 
 Return JSON only:
 {
   "patch": {
     "scene_core.core_event": "...",
     "participants.main_character": "...",
-    "environment.location": "..."
+    "environment.location": "...",
+    "marketing_layer.message": "..."
   },
   "questions": ["..."],
   "message": "...",
@@ -307,8 +332,8 @@ Rules:
 - patch must contain only new or refined fields.
 - Do not include fields you do not want to change.
 - message is required.
-- If ready_hint=false, response_stage must be "refinement", and message must be a refinement reply without replacing Alignment.
-- If ready_hint=true, response_stage must be "alignment", and message must be Alignment: briefly explain how the system understood the task, what decisions are locked, and that the user can now press Build for final assembly.
+- If ready_hint=false, response_stage must be "refinement", and message must clearly show the missing scene anchors plus 2–3 concrete ways to fill them.
+- If ready_hint=true, response_stage must be "alignment", and message must be Alignment: briefly explain how the system understood the task, what decisions are locked, that the frame is ready, that the user should now press Build for final assembly, and that targeted edits remain possible after Build.
 - Do not launch Final Assembly inside this stage.
 - No markdown.
 - No explanations.
@@ -327,6 +352,7 @@ function buildRefinementInput({ blueprint, userMessage, language }) {
       content: [
         { type: "input_text", text: buildRolePrompt(blueprint?.meta?.scriptwriter_role, language) },
         { type: "input_text", text: buildRoleBiasNotes(blueprint?.meta?.scriptwriter_role, language) },
+        { type: "input_text", text: buildTopicGuard(language) },
         { type: "input_text", text: instruction }
       ]
     },
@@ -417,6 +443,7 @@ Rules:
       content: [
         { type: "input_text", text: buildRolePrompt(blueprint?.meta?.scriptwriter_role, language) },
         { type: "input_text", text: buildRoleBiasNotes(blueprint?.meta?.scriptwriter_role, language) },
+        { type: "input_text", text: buildTopicGuard(language) },
         { type: "input_text", text: instruction }
       ]
     },
@@ -573,6 +600,7 @@ ${violation || "none"}`;
       content: [
         { type: "input_text", text: buildRolePrompt(blueprint?.meta?.scriptwriter_role, language) },
         { type: "input_text", text: buildRoleBiasNotes(blueprint?.meta?.scriptwriter_role, language) },
+        { type: "input_text", text: buildTopicGuard(language) },
         { type: "input_text", text: instruction }
       ]
     },

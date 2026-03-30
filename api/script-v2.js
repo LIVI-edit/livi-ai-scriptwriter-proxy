@@ -175,28 +175,34 @@ function buildRefinementInstruction(stage, questionLimit, language) {
 
 Задача:
 - Принять уже выбранную сцену как зафиксированную основу.
-- Дать одно короткое человеческое развитие сцены.
+- Дать содержательное человеческое развитие выбранного направления.
+- Явно показать: какую сцену система приняла, для какой цели видео она её развивает и в каком направлении будет строиться дальше каркас.
 - Не открывать новые 3 сцены.
 - Не давать локальный фейковый финал.
-- Мягко повести пользователя к следующему обязательному шагу.
-- При необходимости задай максимум 1 короткий уточняющий вопрос.
+- Не делать Alignment на этом шаге.
+- При необходимости задай максимум 1 короткий релевантный вопрос только по реально недостающему смысловому каркасу.
 
 Верни ТОЛЬКО JSON:
 {
   "patch": {
     "scene_core.concept_line": "...",
-    "narrative.scene_development": "..."
+    "goal.user_request_summary": "...",
+    "narrative.scene_setup": "...",
+    "narrative.scene_development": "...",
+    "marketing_layer.message": "..."
   },
   "questions": ["..."],
   "message": "...",
+  "response_stage": "development",
   "ready_hint": false
 }
 
 Правила:
 - message обязателен.
-- message должен быть коротким живым development-ответом.
-- Не обещай final assembly.
-- Не делай Alignment на этом шаге.
+- response_stage должен быть "development".
+- message должен быть не сухой заглушкой, а коротким содержательным development-ответом в 3–5 предложениях.
+- В message кратко подтвердить базовую сцену, цель ролика и следующий смысловой вектор сборки.
+- Если критичных недостающих данных нет, questions может быть пустым.
 - patch содержит только реально уточнённые поля.
 - Без markdown.
 - Без пояснений.
@@ -244,20 +250,24 @@ Rules:
 - Посмотреть текущий Scene Blueprint.
 - Обновить сцену только там, где это логично.
 - Не пересоздавать Blueprint заново.
-- Не дублировать известные данные.
+- Не дублировать уже известное из UI, Selection и предыдущих сообщений.
 - Считать scene_core.seed_scene уже зафиксированным источником истины сцены.
 - Не переписывать и не терять seed scene.
 - Обновлять Blueprint только patch-подходом.
-- Определить, каких данных реально не хватает.
-- Задать максимум ${questionLimit} коротких уточняющих вопроса, только если это действительно нужно.
-- Если данных уже достаточно, не задавай новые вопросы, а выдай Alignment как короткое человеческое подтверждение перед Build.
+- Определить minimum usable readiness: есть ли уже цель ролика, смысл сцены, setup, development и эмоциональное направление.
+- Если критично не хватает только одного смыслового опорного блока — задай один самый релевантный вопрос.
+- Если minimum usable каркас уже собран, не жди пустых “ок”, не задавай новых вопросов и сразу выдай Alignment.
 
 Верни ТОЛЬКО JSON:
 {
   "patch": {
     "scene_core.core_event": "...",
+    "goal.user_request_summary": "...",
     "participants.main_character": "...",
-    "environment.location": "..."
+    "environment.location": "...",
+    "narrative.scene_setup": "...",
+    "narrative.scene_development": "...",
+    "marketing_layer.message": "..."
   },
   "questions": ["..."],
   "message": "...",
@@ -269,8 +279,9 @@ Rules:
 - patch должен содержать только новые или уточнённые поля.
 - Не включай поля, если не хочешь их менять.
 - message обязателен.
-- Если ready_hint=false, response_stage должен быть "refinement", а message должен быть refinement-ответом и не заменять Alignment.
-- Если ready_hint=true, response_stage должен быть "alignment", а message должен быть именно Alignment: коротко объясни, как система поняла задачу, какие решения зафиксированы и что теперь можно нажать Build для финальной сборки.
+- Если ready_hint=false, response_stage должен быть "refinement", а message должен быть содержательным refinement-ответом, который либо добирает один недостающий смысловой блок, либо кратко фиксирует уже собранное.
+- Если ready_hint=true, response_stage должен быть "alignment", а message должен быть именно Alignment.
+- Alignment-message обязан кратко показать: о чём видео, для чего оно, какая сцена выбрана за основу, какие смысловые решения уже зафиксированы и что именно будет собрано после Build.
 - Нельзя запускать Final Assembly внутри этого этапа.
 - Не возвращай markdown.
 - Не возвращай объяснения.
@@ -483,7 +494,8 @@ function normalizeRefinementResult(parsed, currentStage) {
     return data;
   }
 
-  if (data.ready_hint === true) {
+  if (data.ready_hint === true || normalizedStage === "alignment") {
+    data.ready_hint = true;
     data.response_stage = "alignment";
   } else {
     data.response_stage = normalizedStage || "refinement";

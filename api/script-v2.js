@@ -220,11 +220,13 @@ Return JSON only:
   },
   "questions": ["..."],
   "message": "...",
+  "response_stage": "development",
   "ready_hint": false
 }
 
 Rules:
 - message is required.
+- response_stage must be "development".
 - message must be a short, human development reply.
 - Do not promise final assembly here.
 - Do not perform Alignment at this step.
@@ -296,6 +298,7 @@ Return JSON only:
   },
   "questions": ["..."],
   "message": "...",
+  "response_stage": "refinement",
   "ready_hint": false
 }
 
@@ -303,8 +306,8 @@ Rules:
 - patch must contain only new or refined fields.
 - Do not include fields you do not want to change.
 - message is required.
-- If ready_hint=false, message must be a refinement reply and must not replace Alignment.
-- If ready_hint=true, message must be Alignment: briefly explain how the system understood the task, what decisions are locked, and that the user can now press Build for final assembly.
+- If ready_hint=false, response_stage must be "refinement", and message must be a refinement reply without replacing Alignment.
+- If ready_hint=true, response_stage must be "alignment", and message must be Alignment: briefly explain how the system understood the task, what decisions are locked, and that the user can now press Build for final assembly.
 - Do not launch Final Assembly inside this stage.
 - No markdown.
 - No explanations.

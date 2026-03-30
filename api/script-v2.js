@@ -190,6 +190,56 @@ function buildLoopMessage(blueprint, patch = {}, userMessage = '', language = 'r
   return lines.join('\n').trim();
 }
 
+
+function hasCommercialGoalContext(blueprint) {
+  const videoType = String(blueprint?.meta?.video_type || '').trim().toLowerCase();
+  if (videoType === 'promo') return true;
+  const goal = String(blueprint?.goal?.video_goal || '').trim().toLowerCase();
+  return ['product', 'service', 'brand', 'promotion', 'promo', 'ad', 'presentation', 'pitch', 'commercial'].some((token) => goal.includes(token));
+}
+
+function getCriticalAlignmentMissingFromState(blueprint, patch = {}) {
+  if (!hasCommercialGoalContext(blueprint)) return [];
+  const merged = mergePatchIntoBlueprint(blueprint, patch);
+  const candidates = [
+    'goal.audience',
+    'marketing_layer.message',
+    'marketing_layer.product_focus'
+  ];
+  const hasCommercialFrame = !!String(merged?.marketing_layer?.message || '').trim() || !!String(merged?.marketing_layer?.product_focus || '').trim();
+  if (hasCommercialFrame) candidates.push('marketing_layer.cta');
+  return candidates.filter((path) => {
+    const finalValue = getByPathLocal(merged, path);
+    if (Array.isArray(finalValue)) return finalValue.length === 0;
+    return !(typeof finalValue === 'string' ? finalValue.trim() : finalValue);
+  });
+}
+
+function getContextTextForBias(blueprint) {
+  return [
+    blueprint?.goal?.user_request_summary,
+    blueprint?.system_state?.last_user_message,
+    blueprint?.scene_core?.seed_scene,
+    blueprint?.scene_core?.main_focus,
+    blueprint?.marketing_layer?.message,
+    blueprint?.marketing_layer?.product_focus,
+  ].map((value) => String(value || '').trim()).filter(Boolean).join('\n').toLowerCase();
+}
+
+function sanitizeRefinementPatch(patch, blueprint) {
+  const next = patch && typeof patch === 'object' ? { ...patch } : {};
+  const contextText = getContextTextForBias(blueprint);
+  const allowLiviContext = /\blivi\b|scriptwriter/.test(contextText);
+  if (!allowLiviContext) {
+    ['goal.user_request_summary', 'scene_core.main_focus', 'marketing_layer.message', 'marketing_layer.product_focus'].forEach((path) => {
+      const value = String(next[path] || '').trim();
+      if (value && /\blivi\b|scriptwriter/i.test(value)) delete next[path];
+    });
+  }
+  return next;
+}
+
+
 function buildRolePrompt(role, language = "ru") {
   const langRu = language !== "en";
 

@@ -492,6 +492,45 @@ function normalizeRefinementResult(parsed, currentStage) {
   return data;
 }
 
+
+function diffPatchPaths(patch) {
+  if (!patch || typeof patch !== "object") return [];
+  return Object.keys(patch).filter(Boolean).sort();
+}
+
+function detectPatchSources(blueprint, patch) {
+  const sources = {};
+  const userMessage = String(blueprint?.system_state?.last_user_message || "").trim();
+  const knownInputs = new Set(Array.isArray(blueprint?.system_state?.known_inputs) ? blueprint.system_state.known_inputs : []);
+  for (const path of diffPatchPaths(patch)) {
+    if (["goal.user_request_summary", "system_state.last_user_message"].includes(path) && userMessage) {
+      sources[path] = "user_input";
+    } else if (knownInputs.has(path.split('.').slice(-1)[0])) {
+      sources[path] = "ui_input";
+    } else {
+      sources[path] = "scriptwriter_interpretation";
+    }
+  }
+  return sources;
+}
+
+function buildServerTrace({ blueprint, action, parsed, normalizedParsed }) {
+  const currentStage = normalizeStage(blueprint?.system_state?.current_stage);
+  const data = normalizedParsed || parsed || {};
+  const patch = data && typeof data.patch === "object" ? data.patch : {};
+  const patchedFields = diffPatchPaths(patch);
+  return {
+    current_stage_before: currentStage,
+    requested_action: action,
+    response_stage: String(data?.response_stage || "").trim().toLowerCase() || null,
+    ready_hint: !!data?.ready_hint,
+    patched_fields: patchedFields,
+    patched_field_sources: detectPatchSources(blueprint, patch),
+    message_present: typeof data?.message === "string" && data.message.trim().length > 0,
+    questions_count: Array.isArray(data?.questions) ? data.questions.length : 0,
+  };
+}
+
 module.exports = async (req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
@@ -548,7 +587,8 @@ module.exports = async (req, res) => {
         action,
         ideas: Array.isArray(parsed.ideas) ? parsed.ideas : [],
         data: parsed,
-        raw
+        raw,
+        trace: buildServerTrace({ blueprint, action, parsed, normalizedParsed: parsed })
       });
     }
 
@@ -556,7 +596,8 @@ module.exports = async (req, res) => {
       ok: true,
       action,
       data: normalizedParsed,
-      raw
+      raw,
+      trace: buildServerTrace({ blueprint, action, parsed, normalizedParsed })
     });
   } catch (err) {
     return json(res, 500, {

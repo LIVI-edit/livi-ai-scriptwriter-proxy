@@ -434,6 +434,196 @@ Rules:
   ];
 }
 
+
+function getImmutableChangeViolation(userMessage) {
+  const text = String(userMessage || "").trim().toLowerCase();
+  if (!text) return null;
+  const rules = [
+    { re: /(не\s+promo|not\s+promo|сделай\s+interactive|make\s+it\s+interactive|другой\s+тип|different\s+type)/i, code: "result_type_change" },
+    { re: /(вариант\s*3|option\s*3|другая\s+сцена|different\s+scene|возьми\s+не\s+эту\s+сцену)/i, code: "seed_scene_change" },
+    { re: /(полностью\s+поменяй\s+идею|change\s+the\s+whole\s+idea|другое\s+видео|video\s+about\s+something\s+else)/i, code: "core_direction_change" }
+  ];
+  const match = rules.find((item) => item.re.test(text));
+  return match ? match.code : null;
+}
+
+function detectPostChatScope(userMessage) {
+  const text = String(userMessage || "").trim().toLowerCase();
+  const scope = new Set();
+  if (!text) return [];
+  if (/(prompt|промпт)/i.test(text)) scope.add("prompt");
+  if (/(preview|превью|overview|обзор)/i.test(text)) { scope.add("preview"); scope.add("video_overview"); }
+  if (/(scene description|описани[ея]\s+сцен|описание\s+сцены)/i.test(text)) scope.add("scene_description");
+  if (/(story concept|концепт|идея\s+истории|story)/i.test(text)) scope.add("story_concept");
+  if (/(scene breakdown|breakdown|разбивк|сцены)/i.test(text)) scope.add("scene_breakdown");
+  if (/(production notes|production|продакшн|notes|заметк)/i.test(text)) scope.add("production_notes");
+  if (/(cta|call to action|призыв)/i.test(text)) { scope.add("prompt"); scope.add("production_notes"); }
+  if (/(tone|тон|премиаль|premium|динамик|dynamic|hook|хук|сильнее|intensity|эмоци)/i.test(text)) {
+    if (!scope.size) { scope.add("prompt"); scope.add("preview"); }
+  }
+  return Array.from(scope);
+}
+
+function buildPostChatInput({ blueprint, deliverableBlocks, userMessage, language }) {
+  const langRu = language !== "en";
+  const editScope = detectPostChatScope(userMessage);
+  const violation = getImmutableChangeViolation(userMessage);
+
+  const instruction = langRu
+    ? `
+Ты работаешь на этапе POST_CHAT controlled improvement.
+
+Задача:
+- Улучшить только уже собранный deliverable.
+- НЕ запускать новый полный цикл.
+- НЕ возвращаться в refinement.
+- НЕ менять video goal, result type, core scene, seed scene и базовое смысловое направление.
+- Если запрос требует смены этой основы — верни out_of_scope.
+- Если запрос слишком общий и неясно, что менять — верни needs_clarification.
+- Если запрос нормальный — измени только нужные блоки deliverable.
+
+Верни ТОЛЬКО JSON:
+{
+  "status": "improved",
+  "message": "...",
+  "edit_scope": ["prompt"],
+  "updated_blocks": {
+    "prompt": "..."
+  },
+  "blocked_reason": null
+}
+
+Правила:
+- status только один из: improved, needs_clarification, out_of_scope.
+- message обязателен всегда.
+- При improved меняй только edit_scope и только связанные блоки.
+- Не дублируй весь deliverable, если пользователь просил локальную правку.
+- При out_of_scope не переписывай блоки, а коротко объясни, что нужен новый цикл.
+- При needs_clarification не переписывай блоки, а коротко спроси, что именно улучшить.
+- Без markdown.
+- Без пояснений вне JSON.
+`.trim()
+    : `
+You are in POST_CHAT controlled improvement.
+
+Task:
+- Improve only the already assembled deliverable.
+- Do NOT start a new full cycle.
+- Do NOT go back to refinement.
+- Do NOT change video goal, result type, core scene, seed scene, or the base direction.
+- If the request tries to change that foundation, return out_of_scope.
+- If the request is too vague, return needs_clarification.
+- Otherwise improve only the needed deliverable blocks.
+
+Return JSON only:
+{
+  "status": "improved",
+  "message": "...",
+  "edit_scope": ["prompt"],
+  "updated_blocks": {
+    "prompt": "..."
+  },
+  "blocked_reason": null
+}
+
+Rules:
+- status must be one of: improved, needs_clarification, out_of_scope.
+- message is always required.
+- On improved, update only the targeted scope and directly adjacent blocks if truly needed.
+- Do not resend the whole deliverable when the user requested a local change.
+- On out_of_scope, do not rewrite blocks; explain that a new cycle is required.
+- On needs_clarification, do not rewrite blocks; ask what exactly should be improved.
+- No markdown.
+- No extra text outside JSON.
+`.trim();
+
+  const contextText = langRu
+    ? `Текущий Blueprint:
+${compact(blueprint || {})}
+
+Текущий deliverable blocks:
+${compact(deliverableBlocks || {})}
+
+Запрос пользователя:
+${String(userMessage || "").trim()}
+
+Предварительно определённый scope:
+${compact(editScope)}
+
+Guardrail violation:
+${violation || "none"}`
+    : `Current Blueprint:
+${compact(blueprint || {})}
+
+Current deliverable blocks:
+${compact(deliverableBlocks || {})}
+
+User request:
+${String(userMessage || "").trim()}
+
+Pre-detected scope:
+${compact(editScope)}
+
+Guardrail violation:
+${violation || "none"}`;
+
+  return [
+    {
+      role: "system",
+      content: [
+        { type: "input_text", text: buildRolePrompt(blueprint?.meta?.scriptwriter_role, language) },
+        { type: "input_text", text: buildRoleBiasNotes(blueprint?.meta?.scriptwriter_role, language) },
+        { type: "input_text", text: instruction }
+      ]
+    },
+    {
+      role: "user",
+      content: [{ type: "input_text", text: contextText }]
+    }
+  ];
+}
+
+function normalizePostChatResult(parsed, userMessage) {
+  const data = parsed && typeof parsed === "object" ? { ...parsed } : {};
+  const violation = getImmutableChangeViolation(userMessage);
+  const detectedScope = detectPostChatScope(userMessage);
+  const status = String(data.status || "").trim().toLowerCase();
+  const vague = !detectedScope.length && String(userMessage || "").trim().length < 18;
+  const normalized = {
+    status: status || (violation ? "out_of_scope" : (vague ? "needs_clarification" : "improved")),
+    message: typeof data.message === "string" ? data.message.trim() : "",
+    edit_scope: Array.isArray(data.edit_scope) ? data.edit_scope.filter(Boolean) : detectedScope,
+    updated_blocks: data.updated_blocks && typeof data.updated_blocks === "object" ? data.updated_blocks : {},
+    blocked_reason: typeof data.blocked_reason === "string" ? data.blocked_reason.trim() : null
+  };
+  if (violation) {
+    normalized.status = "out_of_scope";
+    normalized.updated_blocks = {};
+    normalized.edit_scope = [];
+    normalized.blocked_reason = violation;
+    if (!normalized.message) {
+      normalized.message = /en/i.test(String(data.language || ""))
+        ? "This request changes the base direction and needs a new cycle."
+        : "Этот запрос меняет базовую основу результата и требует нового цикла.";
+    }
+  }
+  if (normalized.status === "needs_clarification") {
+    normalized.updated_blocks = {};
+    if (!normalized.message) {
+      normalized.message = "Уточни, что именно нужно улучшить: Prompt, Preview, Scene Breakdown, Story Concept или CTA.";
+    }
+  }
+  if (normalized.status === "out_of_scope") {
+    normalized.updated_blocks = {};
+  }
+  if (normalized.status === "improved" && !normalized.edit_scope.length) {
+    normalized.status = "needs_clarification";
+    normalized.updated_blocks = {};
+    normalized.message = normalized.message || "Уточни, что именно улучшить: Prompt, Preview, Scene Breakdown, Story Concept или CTA.";
+  }
+  return normalized;
+}
+
 async function callOpenAI(input) {
   const r = await fetch(OPENAI_URL, {
     method: "POST",
@@ -569,17 +759,27 @@ module.exports = async (req, res) => {
       input = buildRefinementInput({ blueprint, userMessage, language });
     } else if (action === "FINAL_ASSEMBLY") {
       input = buildFinalAssemblyInput({ blueprint, resultSchema, language });
+    } else if (action === "POST_CHAT") {
+      if (!userMessage) {
+        return json(res, 400, { error: "Missing userMessage for POST_CHAT" });
+      }
+      input = buildPostChatInput({
+        blueprint,
+        deliverableBlocks: body.deliverableBlocks || payload.deliverableBlocks || {},
+        userMessage,
+        language
+      });
     } else {
       return json(res, 400, {
         error: "Unsupported action",
-        supported_actions: ["SCENE_IDEAS", "REFINEMENT", "FINAL_ASSEMBLY"]
+        supported_actions: ["SCENE_IDEAS", "REFINEMENT", "FINAL_ASSEMBLY", "POST_CHAT"]
       });
     }
 
     const { parsed, raw } = await callOpenAI(input);
     const normalizedParsed = action === "REFINEMENT"
       ? normalizeRefinementResult(parsed, blueprint?.system_state?.current_stage)
-      : parsed;
+      : (action === "POST_CHAT" ? normalizePostChatResult(parsed, userMessage) : parsed);
 
     if (action === "SCENE_IDEAS") {
       return json(res, 200, {

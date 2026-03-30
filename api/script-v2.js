@@ -34,6 +34,11 @@ function getQuestionLimit(planTier) {
   return 2;
 }
 
+function normalizeStage(stage) {
+  const value = String(stage || "").trim().toLowerCase();
+  return value || "start";
+}
+
 function buildRolePrompt(role, language = "ru") {
   const langRu = language !== "en";
 
@@ -54,7 +59,6 @@ function buildRolePrompt(role, language = "ru") {
 
   return roles[String(role || "").toLowerCase()] || roles.nika;
 }
-
 
 function buildRoleBiasNotes(role, language = "ru") {
   const langRu = language !== "en";
@@ -154,20 +158,83 @@ JSON format:
       content: [
         {
           type: "input_text",
-          text: langRu
-            ? `UI inputs:\n${compact(uiInputs || {})}\n\nBlueprint:\n${compact(blueprint || {})}`
-            : `UI inputs:\n${compact(uiInputs || {})}\n\nBlueprint:\n${compact(blueprint || {})}`
+          text: `UI inputs:\n${compact(uiInputs || {})}\n\nBlueprint:\n${compact(blueprint || {})}`
         }
       ]
     }
   ];
 }
 
-function buildRefinementInput({ blueprint, userMessage, language }) {
+function buildRefinementInstruction(stage, questionLimit, language) {
   const langRu = language !== "en";
-  const questionLimit = getQuestionLimit(blueprint?.meta?.plan_tier);
 
-  const instruction = langRu
+  if (stage === "development") {
+    return langRu
+      ? `
+Ты работаешь на этапе DEVELOPMENT.
+
+Задача:
+- Принять уже выбранную сцену как зафиксированную основу.
+- Дать одно короткое человеческое развитие сцены.
+- Не открывать новые 3 сцены.
+- Не давать локальный фейковый финал.
+- Мягко повести пользователя к следующему обязательному шагу.
+- При необходимости задай максимум 1 короткий уточняющий вопрос.
+
+Верни ТОЛЬКО JSON:
+{
+  "patch": {
+    "scene_core.concept_line": "...",
+    "narrative.scene_development": "..."
+  },
+  "questions": ["..."],
+  "message": "...",
+  "ready_hint": false
+}
+
+Правила:
+- message обязателен.
+- message должен быть коротким живым development-ответом.
+- Не обещай final assembly.
+- Не делай Alignment на этом шаге.
+- patch содержит только реально уточнённые поля.
+- Без markdown.
+- Без пояснений.
+`.trim()
+      : `
+You are in the DEVELOPMENT stage.
+
+Task:
+- Treat the selected scene as the locked foundation.
+- Give one short human development step for the scene.
+- Do not open 3 new scene ideas.
+- Do not output a fake local final.
+- Softly guide the user to the next required step.
+- If needed, ask at most 1 short clarifying question.
+
+Return JSON only:
+{
+  "patch": {
+    "scene_core.concept_line": "...",
+    "narrative.scene_development": "..."
+  },
+  "questions": ["..."],
+  "message": "...",
+  "ready_hint": false
+}
+
+Rules:
+- message is required.
+- message must be a short, human development reply.
+- Do not promise final assembly here.
+- Do not perform Alignment at this step.
+- patch contains only truly refined fields.
+- No markdown.
+- No explanations.
+`.trim();
+  }
+
+  return langRu
     ? `
 Ты работаешь на этапе REFINEMENT.
 
@@ -181,7 +248,7 @@ function buildRefinementInput({ blueprint, userMessage, language }) {
 - Обновлять Blueprint только patch-подходом.
 - Определить, каких данных реально не хватает.
 - Задать максимум ${questionLimit} коротких уточняющих вопроса, только если это действительно нужно.
-- Если данных уже достаточно, не задавай вопросы.
+- Если данных уже достаточно, не задавай новые вопросы, а выдай Alignment как короткое человеческое подтверждение перед Build.
 
 Верни ТОЛЬКО JSON:
 {
@@ -190,13 +257,18 @@ function buildRefinementInput({ blueprint, userMessage, language }) {
     "participants.main_character": "...",
     "environment.location": "..."
   },
-  "questions": ["...", "..."],
+  "questions": ["..."],
+  "message": "...",
   "ready_hint": false
 }
 
 Правила:
 - patch должен содержать только новые или уточнённые поля.
 - Не включай поля, если не хочешь их менять.
+- message обязателен.
+- Если ready_hint=false, message должен быть refinement-ответом и не заменять Alignment.
+- Если ready_hint=true, message должен быть именно Alignment: коротко объясни, как система поняла задачу, какие решения зафиксированы и что теперь можно нажать Build для финальной сборки.
+- Нельзя запускать Final Assembly внутри этого этапа.
 - Не возвращай markdown.
 - Не возвращай объяснения.
 `.trim()
@@ -208,9 +280,12 @@ Task:
 - Update the scene only where it makes sense.
 - Do not recreate the Blueprint from scratch.
 - Do not repeat known data.
+- Treat scene_core.seed_scene as the locked source of truth for the scene.
+- Do not overwrite or lose the seed scene.
+- Update the Blueprint only via patch logic.
 - Determine what is still truly missing.
 - Ask at most ${questionLimit} short clarifying questions only if needed.
-- If there is enough information already, ask no questions.
+- If there is already enough information, ask no new questions and output Alignment as a short human confirmation before Build.
 
 Return JSON only:
 {
@@ -219,16 +294,28 @@ Return JSON only:
     "participants.main_character": "...",
     "environment.location": "..."
   },
-  "questions": ["...", "..."],
+  "questions": ["..."],
+  "message": "...",
   "ready_hint": false
 }
 
 Rules:
 - patch must contain only new or refined fields.
 - Do not include fields you do not want to change.
+- message is required.
+- If ready_hint=false, message must be a refinement reply and must not replace Alignment.
+- If ready_hint=true, message must be Alignment: briefly explain how the system understood the task, what decisions are locked, and that the user can now press Build for final assembly.
+- Do not launch Final Assembly inside this stage.
 - No markdown.
 - No explanations.
 `.trim();
+}
+
+function buildRefinementInput({ blueprint, userMessage, language }) {
+  const questionLimit = getQuestionLimit(blueprint?.meta?.plan_tier);
+  const currentStage = normalizeStage(blueprint?.system_state?.current_stage);
+  const instruction = buildRefinementInstruction(currentStage, questionLimit, language);
+  const langRu = language !== "en";
 
   return [
     {
@@ -245,8 +332,8 @@ Rules:
         {
           type: "input_text",
           text: langRu
-            ? `Текущий Blueprint:\n${compact(blueprint || {})}\n\nПоследний ответ пользователя:\n${String(userMessage || "").trim()}`
-            : `Current Blueprint:\n${compact(blueprint || {})}\n\nLatest user reply:\n${String(userMessage || "").trim()}`
+            ? `Текущий этап: ${currentStage}\n\nТекущий Blueprint:\n${compact(blueprint || {})}\n\nПоследний ответ пользователя:\n${String(userMessage || "").trim()}`
+            : `Current stage: ${currentStage}\n\nCurrent Blueprint:\n${compact(blueprint || {})}\n\nLatest user reply:\n${String(userMessage || "").trim()}`
         }
       ]
     }

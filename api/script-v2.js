@@ -39,6 +39,157 @@ function normalizeStage(stage) {
   return value || "start";
 }
 
+function isWeakAcknowledgement(text) {
+  const value = String(text || "").trim().toLowerCase();
+  if (!value) return false;
+  if (/^[0-9]+$/.test(value)) return false;
+  return ["ok", "okay", "ок", "да", "yes", "ага", "норм", "good", "fine", "далее", "дальше", "go", "build"].includes(value);
+}
+
+function getByPathLocal(obj, path) {
+  return String(path || "").split('.').filter(Boolean).reduce((acc, key) => (acc == null ? undefined : acc[key]), obj);
+}
+
+function mergePatchIntoBlueprint(blueprint, patch = {}) {
+  const next = JSON.parse(JSON.stringify(blueprint || {}));
+  Object.entries(patch || {}).forEach(([path, value]) => {
+    const keys = String(path || '').split('.').filter(Boolean);
+    if (!keys.length) return;
+    let cursor = next;
+    for (let i = 0; i < keys.length - 1; i += 1) {
+      const key = keys[i];
+      if (!cursor[key] || typeof cursor[key] !== 'object') cursor[key] = {};
+      cursor = cursor[key];
+    }
+    cursor[keys[keys.length - 1]] = value;
+  });
+  return next;
+}
+
+function getPriorityAnchors(blueprint, patch = {}, userMessage = "", maxAnchors = 2) {
+  const next = mergePatchIntoBlueprint(blueprint, patch);
+  const weakAck = isWeakAcknowledgement(userMessage);
+  const stored = Array.isArray(next?.system_state?.refinement_focus_anchors)
+    ? next.system_state.refinement_focus_anchors.filter((path) => {
+        const value = getByPathLocal(next, path);
+        return !(typeof value === 'string' ? value.trim() : value);
+      })
+    : [];
+  if (weakAck && stored.length) return stored.slice(0, maxAnchors);
+
+  const critical = getCriticalAlignmentMissingFromState(next, {});
+  if (critical.length) return critical.slice(0, maxAnchors);
+
+  const secondary = [
+    'narrative.scene_development',
+    'scene_core.core_event',
+    'scene_core.main_focus',
+    'environment.location',
+    'participants.main_character',
+    'visual_direction.visual_style'
+  ].filter((path) => {
+    const value = getByPathLocal(next, path);
+    return !(typeof value === 'string' ? value.trim() : value);
+  });
+  if (secondary.length) return secondary.slice(0, maxAnchors);
+
+  return [];
+}
+
+function getAnchorOptions(path, language = 'ru') {
+  const ru = {
+    'goal.audience': ['маркетологи и performance-команды', 'контент-команды и copy/creative', 'малый бизнес / founders'],
+    'marketing_layer.message': ['экономия времени', 'повышение качества и ясности', 'быстрое превращение идеи в структуру'],
+    'marketing_layer.product_focus': ['AI-генерация сценария', 'структурирование и сборка идеи', 'ускорение командной работы'],
+    'marketing_layer.cta': ['попробовать сейчас', 'ускорить производство контента', 'собрать рабочую структуру быстрее'],
+    'narrative.scene_development': ['усилить движение и escalation', 'сделать раскрытие мягче', 'добавить более чёткий payoff'],
+    'scene_core.core_event': ['момент reveal', 'момент выбора', 'момент трансформации'],
+    'scene_core.main_focus': ['герой и действие', 'продукт и польза', 'атмосфера и визуальный образ'],
+    'environment.location': ['цифровое пространство', 'офис / студия / workspace', 'абстрактный cinematic environment'],
+    'participants.main_character': ['основатель / эксперт', 'креатор / маркетолог', 'абстрактный герой / оператор системы'],
+    'visual_direction.visual_style': ['cinematic premium', 'clean minimal', 'dynamic commercial']
+  };
+  const en = {
+    'goal.audience': ['marketers and performance teams', 'content teams and copy/creative', 'small business / founders'],
+    'marketing_layer.message': ['save time', 'improve quality and clarity', 'turn ideas into structure faster'],
+    'marketing_layer.product_focus': ['AI script generation', 'idea structuring and assembly', 'faster team workflow'],
+    'marketing_layer.cta': ['try it now', 'speed up content production', 'build a working structure faster'],
+    'narrative.scene_development': ['stronger movement and escalation', 'softer reveal', 'clearer payoff'],
+    'scene_core.core_event': ['a reveal moment', 'a choice moment', 'a transformation moment'],
+    'scene_core.main_focus': ['hero and action', 'product and benefit', 'atmosphere and visual image'],
+    'environment.location': ['digital space', 'office / studio / workspace', 'abstract cinematic environment'],
+    'participants.main_character': ['founder / expert', 'creator / marketer', 'abstract hero / system operator'],
+    'visual_direction.visual_style': ['cinematic premium', 'clean minimal', 'dynamic commercial']
+  };
+  return ((language === 'en' ? en : ru)[path] || []).slice(0, 3);
+}
+
+function getAnchorLabel(path, language = 'ru') {
+  const ru = {
+    'goal.audience': 'аудитория',
+    'marketing_layer.message': 'основной посыл',
+    'marketing_layer.product_focus': 'продуктовый акцент',
+    'marketing_layer.cta': 'CTA',
+    'narrative.scene_development': 'развитие сцены',
+    'scene_core.core_event': 'ключевое событие',
+    'scene_core.main_focus': 'главный фокус',
+    'environment.location': 'локация',
+    'participants.main_character': 'главный герой/субъект',
+    'visual_direction.visual_style': 'визуальный стиль'
+  };
+  const en = {
+    'goal.audience': 'audience',
+    'marketing_layer.message': 'core message',
+    'marketing_layer.product_focus': 'product focus',
+    'marketing_layer.cta': 'CTA',
+    'narrative.scene_development': 'scene development',
+    'scene_core.core_event': 'core event',
+    'scene_core.main_focus': 'main focus',
+    'environment.location': 'location',
+    'participants.main_character': 'main character / subject',
+    'visual_direction.visual_style': 'visual style'
+  };
+  return (language === 'en' ? en[path] : ru[path]) || path;
+}
+
+function buildLoopMessage(blueprint, patch = {}, userMessage = '', language = 'ru') {
+  const merged = mergePatchIntoBlueprint(blueprint, patch);
+  const priority = getPriorityAnchors(merged, {}, userMessage, 2);
+  const seedScene = String(merged?.scene_core?.seed_scene || '').trim();
+  const concept = String(merged?.scene_core?.concept_line || merged?.scene_core?.main_focus || '').trim();
+  const lines = [];
+  if (language === 'en') {
+    lines.push('Locked so far:');
+    if (seedScene) lines.push(`- base scene: ${seedScene}`);
+    if (concept) lines.push(`- direction: ${concept}`);
+    if (priority.length) {
+      lines.push('');
+      lines.push('Critical to complete now:');
+      priority.forEach((path) => {
+        lines.push(`- ${getAnchorLabel(path, language)}`);
+        getAnchorOptions(path, language).forEach((option, index) => lines.push(`  ${index + 1}) ${option}`));
+      });
+      lines.push('');
+      lines.push('Send one concrete choice for the current items, and then the loop will move forward.');
+    }
+  } else {
+    lines.push('Уже зафиксировано:');
+    if (seedScene) lines.push(`- базовая сцена: ${seedScene}`);
+    if (concept) lines.push(`- вектор: ${concept}`);
+    if (priority.length) {
+      lines.push('');
+      lines.push('Сейчас критично добрать:');
+      priority.forEach((path) => {
+        lines.push(`- ${getAnchorLabel(path, language)}`);
+        getAnchorOptions(path, language).forEach((option, index) => lines.push(`  ${index + 1}) ${option}`));
+      });
+      lines.push('');
+      lines.push('Нужен один содержательный выбор по текущим пунктам, и loop пойдёт дальше.');
+    }
+  }
+  return lines.join('\n').trim();
+}
+
 function buildRolePrompt(role, language = "ru") {
   const langRu = language !== "en";
 
@@ -818,21 +969,43 @@ async function callOpenAI(input) {
   return { raw, parsed: JSON.parse(raw) };
 }
 
-function normalizeRefinementResult(parsed, currentStage) {
+function normalizeRefinementResult(parsed, currentStage, blueprint, userMessage = "") {
   const data = parsed && typeof parsed === "object" ? { ...parsed } : {};
   const stage = normalizeStage(currentStage);
+  data.patch = sanitizeRefinementPatch(data.patch, blueprint);
   const normalizedStage = String(data.response_stage || "").trim().toLowerCase();
+  const weakAck = isWeakAcknowledgement(userMessage);
 
   if (stage === "development") {
     data.response_stage = normalizedStage || "development";
     data.ready_hint = false;
+    data.patch = { ...(data.patch || {}), "system_state.refinement_focus_anchors": getPriorityAnchors(blueprint, data.patch || {}, userMessage, 2) };
+    if (!String(data.message || '').trim()) data.message = buildLoopMessage(blueprint, data.patch, userMessage, blueprint?.meta?.language || 'ru');
     return data;
   }
 
-  if (data.ready_hint === true) {
+  const criticalMissing = getCriticalAlignmentMissingFromState(blueprint, data.patch || {});
+  const priorityAnchors = getPriorityAnchors(blueprint, data.patch || {}, userMessage, 2);
+  if (weakAck) {
+    ["goal.audience", "marketing_layer.message", "marketing_layer.product_focus", "marketing_layer.cta"].forEach((path) => {
+      delete data.patch?.[path];
+    });
+  }
+  data.patch = { ...(data.patch || {}), "system_state.refinement_focus_anchors": priorityAnchors };
+
+  if (criticalMissing.length || priorityAnchors.length) {
+    data.ready_hint = false;
+    data.response_stage = "refinement";
+    data.questions = [];
+    data.message = buildLoopMessage(blueprint, data.patch, userMessage, blueprint?.meta?.language || 'ru');
+  } else if (data.ready_hint === true) {
     data.response_stage = "alignment";
   } else {
     data.response_stage = normalizedStage || "refinement";
+    if (data.response_stage === 'refinement') {
+      data.message = buildLoopMessage(blueprint, data.patch, userMessage, blueprint?.meta?.language || 'ru');
+      data.questions = [];
+    }
   }
 
   return data;
@@ -934,7 +1107,7 @@ module.exports = async (req, res) => {
 
     const { parsed, raw } = await callOpenAI(input);
     let normalizedParsed = action === "REFINEMENT"
-      ? normalizeRefinementResult(parsed, blueprint?.system_state?.current_stage)
+      ? normalizeRefinementResult(parsed, blueprint?.system_state?.current_stage, blueprint, userMessage)
       : (action === "POST_CHAT"
           ? normalizePostChatResult(parsed, userMessage, body.deliverableBlocks || payload.deliverableBlocks || {}, language)
           : parsed);

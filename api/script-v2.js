@@ -261,6 +261,7 @@ Rules:
   },
   "questions": ["..."],
   "message": "...",
+  "response_stage": "refinement",
   "ready_hint": false
 }
 
@@ -268,8 +269,8 @@ Rules:
 - patch должен содержать только новые или уточнённые поля.
 - Не включай поля, если не хочешь их менять.
 - message обязателен.
-- Если ready_hint=false, message должен быть refinement-ответом и не заменять Alignment.
-- Если ready_hint=true, message должен быть именно Alignment: коротко объясни, как система поняла задачу, какие решения зафиксированы и что теперь можно нажать Build для финальной сборки.
+- Если ready_hint=false, response_stage должен быть "refinement", а message должен быть refinement-ответом и не заменять Alignment.
+- Если ready_hint=true, response_stage должен быть "alignment", а message должен быть именно Alignment: коротко объясни, как система поняла задачу, какие решения зафиксированы и что теперь можно нажать Build для финальной сборки.
 - Нельзя запускать Final Assembly внутри этого этапа.
 - Не возвращай markdown.
 - Не возвращай объяснения.
@@ -471,6 +472,26 @@ async function callOpenAI(input) {
   return { raw, parsed: JSON.parse(raw) };
 }
 
+function normalizeRefinementResult(parsed, currentStage) {
+  const data = parsed && typeof parsed === "object" ? { ...parsed } : {};
+  const stage = normalizeStage(currentStage);
+  const normalizedStage = String(data.response_stage || "").trim().toLowerCase();
+
+  if (stage === "development") {
+    data.response_stage = normalizedStage || "development";
+    data.ready_hint = false;
+    return data;
+  }
+
+  if (data.ready_hint === true) {
+    data.response_stage = "alignment";
+  } else {
+    data.response_stage = normalizedStage || "refinement";
+  }
+
+  return data;
+}
+
 module.exports = async (req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
@@ -517,6 +538,9 @@ module.exports = async (req, res) => {
     }
 
     const { parsed, raw } = await callOpenAI(input);
+    const normalizedParsed = action === "REFINEMENT"
+      ? normalizeRefinementResult(parsed, blueprint?.system_state?.current_stage)
+      : parsed;
 
     if (action === "SCENE_IDEAS") {
       return json(res, 200, {
@@ -531,7 +555,7 @@ module.exports = async (req, res) => {
     return json(res, 200, {
       ok: true,
       action,
-      data: parsed,
+      data: normalizedParsed,
       raw
     });
   } catch (err) {

@@ -34,11 +34,6 @@ function getQuestionLimit(planTier) {
   return 2;
 }
 
-function normalizeStage(stage) {
-  const value = String(stage || "").trim().toLowerCase();
-  return value || "start";
-}
-
 function buildRolePrompt(role, language = "ru") {
   const langRu = language !== "en";
 
@@ -59,6 +54,7 @@ function buildRolePrompt(role, language = "ru") {
 
   return roles[String(role || "").toLowerCase()] || roles.nika;
 }
+
 
 function buildRoleBiasNotes(role, language = "ru") {
   const langRu = language !== "en";
@@ -84,7 +80,7 @@ function buildSceneIdeasInput({ blueprint, uiInputs, language }) {
 
   const instruction = langRu
     ? `
-Сгенерируй 3 идеи сцены для LiVi AI Scriptwriter.
+Сгенерируй 3 идеи сцены для интерактивного сценарного потока.
 
 Задача:
 - НЕ писать длинный сценарий.
@@ -113,7 +109,7 @@ function buildSceneIdeasInput({ blueprint, uiInputs, language }) {
 }
 `.trim()
     : `
-Generate 3 scene ideas for LiVi AI Scriptwriter.
+Generate 3 scene ideas for an interactive video scriptwriting flow.
 
 Task:
 - Do NOT write a full script.
@@ -158,85 +154,20 @@ JSON format:
       content: [
         {
           type: "input_text",
-          text: `UI inputs:\n${compact(uiInputs || {})}\n\nBlueprint:\n${compact(blueprint || {})}`
+          text: langRu
+            ? `UI inputs:\n${compact(uiInputs || {})}\n\nBlueprint:\n${compact(blueprint || {})}`
+            : `UI inputs:\n${compact(uiInputs || {})}\n\nBlueprint:\n${compact(blueprint || {})}`
         }
       ]
     }
   ];
 }
 
-function buildRefinementInstruction(stage, questionLimit, language) {
+function buildRefinementInput({ blueprint, userMessage, language }) {
   const langRu = language !== "en";
+  const questionLimit = getQuestionLimit(blueprint?.meta?.plan_tier);
 
-  if (stage === "development") {
-    return langRu
-      ? `
-Ты работаешь на этапе DEVELOPMENT.
-
-Задача:
-- Принять уже выбранную сцену как зафиксированную основу.
-- Дать одно короткое человеческое развитие сцены.
-- Не открывать новые 3 сцены.
-- Не давать локальный фейковый финал.
-- Мягко повести пользователя к следующему обязательному шагу.
-- При необходимости задай максимум 1 короткий уточняющий вопрос.
-
-Верни ТОЛЬКО JSON:
-{
-  "patch": {
-    "scene_core.concept_line": "...",
-    "narrative.scene_development": "..."
-  },
-  "questions": ["..."],
-  "message": "...",
-  "ready_hint": false
-}
-
-Правила:
-- message обязателен.
-- message должен быть коротким живым development-ответом.
-- Не обещай final assembly.
-- Не делай Alignment на этом шаге.
-- patch содержит только реально уточнённые поля.
-- Без markdown.
-- Без пояснений.
-`.trim()
-      : `
-You are in the DEVELOPMENT stage.
-
-Task:
-- Treat the selected scene as the locked foundation.
-- Give one short human development step for the scene.
-- Do not open 3 new scene ideas.
-- Do not output a fake local final.
-- Softly guide the user to the next required step.
-- If needed, ask at most 1 short clarifying question.
-
-Return JSON only:
-{
-  "patch": {
-    "scene_core.concept_line": "...",
-    "narrative.scene_development": "..."
-  },
-  "questions": ["..."],
-  "message": "...",
-  "response_stage": "development",
-  "ready_hint": false
-}
-
-Rules:
-- message is required.
-- response_stage must be "development".
-- message must be a short, human development reply.
-- Do not promise final assembly here.
-- Do not perform Alignment at this step.
-- patch contains only truly refined fields.
-- No markdown.
-- No explanations.
-`.trim();
-  }
-
-  return langRu
+  const instruction = langRu
     ? `
 Ты работаешь на этапе REFINEMENT.
 
@@ -249,8 +180,10 @@ Rules:
 - Не переписывать и не терять seed scene.
 - Обновлять Blueprint только patch-подходом.
 - Определить, каких данных реально не хватает.
+- Если чего-то не хватает, говори конкретно и сразу предлагай 2–3 коротких варианта добора вместо общей абстрактной фразы.
 - Задать максимум ${questionLimit} коротких уточняющих вопроса, только если это действительно нужно.
-- Если данных уже достаточно, не задавай новые вопросы, а выдай Alignment как короткое человеческое подтверждение перед Build.
+- Когда просишь уточнение, сразу предлагай 2–3 коротких конкретных варианта, чтобы пользователь не формулировал всё заново с нуля.
+- Если данных уже достаточно, не задавай вопросы.
 
 Верни ТОЛЬКО JSON:
 {
@@ -259,19 +192,13 @@ Rules:
     "participants.main_character": "...",
     "environment.location": "..."
   },
-  "questions": ["..."],
-  "message": "...",
-  "response_stage": "refinement",
+  "questions": ["...", "..."],
   "ready_hint": false
 }
 
 Правила:
 - patch должен содержать только новые или уточнённые поля.
 - Не включай поля, если не хочешь их менять.
-- message обязателен.
-- Если ready_hint=false, response_stage должен быть "refinement", а message должен быть refinement-ответом и не заменять Alignment.
-- Если ready_hint=true, response_stage должен быть "alignment", а message должен быть именно Alignment: коротко объясни, как система поняла задачу, какие решения зафиксированы и что теперь можно нажать Build для финальной сборки.
-- Нельзя запускать Final Assembly внутри этого этапа.
 - Не возвращай markdown.
 - Не возвращай объяснения.
 `.trim()
@@ -283,12 +210,11 @@ Task:
 - Update the scene only where it makes sense.
 - Do not recreate the Blueprint from scratch.
 - Do not repeat known data.
-- Treat scene_core.seed_scene as the locked source of truth for the scene.
-- Do not overwrite or lose the seed scene.
-- Update the Blueprint only via patch logic.
 - Determine what is still truly missing.
+- If something is missing, speak concretely and suggest 2–3 short ways to fill that missing piece instead of using vague phrases.
 - Ask at most ${questionLimit} short clarifying questions only if needed.
-- If there is already enough information, ask no new questions and output Alignment as a short human confirmation before Build.
+- When you ask for a clarification, suggest 2–3 short concrete options the user can choose from.
+- If there is enough information already, ask no questions.
 
 Return JSON only:
 {
@@ -297,29 +223,16 @@ Return JSON only:
     "participants.main_character": "...",
     "environment.location": "..."
   },
-  "questions": ["..."],
-  "message": "...",
-  "response_stage": "refinement",
+  "questions": ["...", "..."],
   "ready_hint": false
 }
 
 Rules:
 - patch must contain only new or refined fields.
 - Do not include fields you do not want to change.
-- message is required.
-- If ready_hint=false, response_stage must be "refinement", and message must be a refinement reply without replacing Alignment.
-- If ready_hint=true, response_stage must be "alignment", and message must be Alignment: briefly explain how the system understood the task, what decisions are locked, and that the user can now press Build for final assembly.
-- Do not launch Final Assembly inside this stage.
 - No markdown.
 - No explanations.
 `.trim();
-}
-
-function buildRefinementInput({ blueprint, userMessage, language }) {
-  const questionLimit = getQuestionLimit(blueprint?.meta?.plan_tier);
-  const currentStage = normalizeStage(blueprint?.system_state?.current_stage);
-  const instruction = buildRefinementInstruction(currentStage, questionLimit, language);
-  const langRu = language !== "en";
 
   return [
     {
@@ -336,8 +249,8 @@ function buildRefinementInput({ blueprint, userMessage, language }) {
         {
           type: "input_text",
           text: langRu
-            ? `Текущий этап: ${currentStage}\n\nТекущий Blueprint:\n${compact(blueprint || {})}\n\nПоследний ответ пользователя:\n${String(userMessage || "").trim()}`
-            : `Current stage: ${currentStage}\n\nCurrent Blueprint:\n${compact(blueprint || {})}\n\nLatest user reply:\n${String(userMessage || "").trim()}`
+            ? `Текущий Blueprint:\n${compact(blueprint || {})}\n\nПоследний ответ пользователя:\n${String(userMessage || "").trim()}`
+            : `Current Blueprint:\n${compact(blueprint || {})}\n\nLatest user reply:\n${String(userMessage || "").trim()}`
         }
       ]
     }
@@ -434,352 +347,6 @@ Rules:
   ];
 }
 
-
-function getImmutableChangeViolation(userMessage) {
-  const text = String(userMessage || "").trim().toLowerCase();
-  if (!text) return null;
-  const rules = [
-    { re: /(не\s+promo|not\s+promo|сделай\s+interactive|make\s+it\s+interactive|другой\s+тип|different\s+type)/i, code: "result_type_change" },
-    { re: /(вариант\s*3|option\s*3|другая\s+сцена|different\s+scene|возьми\s+не\s+эту\s+сцену)/i, code: "seed_scene_change" },
-    { re: /(полностью\s+поменяй\s+идею|change\s+the\s+whole\s+idea|другое\s+видео|video\s+about\s+something\s+else)/i, code: "core_direction_change" }
-  ];
-  const match = rules.find((item) => item.re.test(text));
-  return match ? match.code : null;
-}
-
-function detectPostChatScope(userMessage) {
-  const text = String(userMessage || "").trim().toLowerCase();
-  const scope = new Set();
-  if (!text) return [];
-  if (/(prompt|промпт)/i.test(text)) scope.add("prompt");
-  if (/(preview|превью|overview|обзор)/i.test(text)) { scope.add("preview"); scope.add("video_overview"); }
-  if (/(scene description|описани[ея]\s+сцен|описание\s+сцены)/i.test(text)) scope.add("scene_description");
-  if (/(story concept|концепт|идея\s+истории|story)/i.test(text)) scope.add("story_concept");
-  if (/(scene breakdown|breakdown|разбивк|сцены)/i.test(text)) scope.add("scene_breakdown");
-  if (/(production notes|production|продакшн|notes|заметк)/i.test(text)) scope.add("production_notes");
-  if (/(cta|call to action|призыв)/i.test(text)) { scope.add("prompt"); scope.add("production_notes"); }
-  if (/(tone|тон|премиаль|premium|динамик|dynamic|hook|хук|сильнее|intensity|эмоци)/i.test(text)) {
-    if (!scope.size) { scope.add("prompt"); scope.add("preview"); }
-  }
-  return Array.from(scope);
-}
-
-function buildPostChatInput({ blueprint, deliverableBlocks, userMessage, language }) {
-  const langRu = language !== "en";
-  const editScope = detectPostChatScope(userMessage);
-  const violation = getImmutableChangeViolation(userMessage);
-
-  const instruction = langRu
-    ? `
-Ты работаешь на этапе POST_CHAT controlled improvement.
-
-Задача:
-- Улучшить только уже собранный deliverable.
-- НЕ запускать новый полный цикл.
-- НЕ возвращаться в refinement.
-- НЕ менять video goal, result type, core scene, seed scene и базовое смысловое направление.
-- Если запрос требует смены этой основы — верни out_of_scope.
-- Если запрос слишком общий и неясно, что менять — верни needs_clarification.
-- Если запрос нормальный — измени только нужные блоки deliverable.
-
-Верни ТОЛЬКО JSON:
-{
-  "status": "improved",
-  "message": "...",
-  "edit_scope": ["prompt"],
-  "updated_blocks": {
-    "prompt": "..."
-  },
-  "blocked_reason": null
-}
-
-Правила:
-- status только один из: improved, needs_clarification, out_of_scope.
-- message обязателен всегда.
-- При improved меняй только edit_scope и только связанные блоки.
-- Не дублируй весь deliverable, если пользователь просил локальную правку.
-- При out_of_scope не переписывай блоки, а коротко объясни, что нужен новый цикл.
-- При needs_clarification не переписывай блоки, а коротко спроси, что именно улучшить.
-- Без markdown.
-- Без пояснений вне JSON.
-`.trim()
-    : `
-You are in POST_CHAT controlled improvement.
-
-Task:
-- Improve only the already assembled deliverable.
-- Do NOT start a new full cycle.
-- Do NOT go back to refinement.
-- Do NOT change video goal, result type, core scene, seed scene, or the base direction.
-- If the request tries to change that foundation, return out_of_scope.
-- If the request is too vague, return needs_clarification.
-- Otherwise improve only the needed deliverable blocks.
-
-Return JSON only:
-{
-  "status": "improved",
-  "message": "...",
-  "edit_scope": ["prompt"],
-  "updated_blocks": {
-    "prompt": "..."
-  },
-  "blocked_reason": null
-}
-
-Rules:
-- status must be one of: improved, needs_clarification, out_of_scope.
-- message is always required.
-- On improved, update only the targeted scope and directly adjacent blocks if truly needed.
-- Do not resend the whole deliverable when the user requested a local change.
-- On out_of_scope, do not rewrite blocks; explain that a new cycle is required.
-- On needs_clarification, do not rewrite blocks; ask what exactly should be improved.
-- No markdown.
-- No extra text outside JSON.
-`.trim();
-
-  const contextText = langRu
-    ? `Текущий Blueprint:
-${compact(blueprint || {})}
-
-Текущий deliverable blocks:
-${compact(deliverableBlocks || {})}
-
-Запрос пользователя:
-${String(userMessage || "").trim()}
-
-Предварительно определённый scope:
-${compact(editScope)}
-
-Guardrail violation:
-${violation || "none"}`
-    : `Current Blueprint:
-${compact(blueprint || {})}
-
-Current deliverable blocks:
-${compact(deliverableBlocks || {})}
-
-User request:
-${String(userMessage || "").trim()}
-
-Pre-detected scope:
-${compact(editScope)}
-
-Guardrail violation:
-${violation || "none"}`;
-
-  return [
-    {
-      role: "system",
-      content: [
-        { type: "input_text", text: buildRolePrompt(blueprint?.meta?.scriptwriter_role, language) },
-        { type: "input_text", text: buildRoleBiasNotes(blueprint?.meta?.scriptwriter_role, language) },
-        { type: "input_text", text: instruction }
-      ]
-    },
-    {
-      role: "user",
-      content: [{ type: "input_text", text: contextText }]
-    }
-  ];
-}
-
-function getClarificationMessage(language) {
-  return language === "en"
-    ? "Please уточни what exactly to improve: Prompt, CTA, Preview, Overview, Breakdown, Story Concept or Notes."
-    : "Уточни, что именно улучшить: Prompt, CTA, Preview, Overview, Breakdown, Story Concept или Notes.";
-}
-
-function pickAllowedPostChatBlocks(scope) {
-  const requested = Array.isArray(scope) ? scope.filter(Boolean) : [];
-  const allowed = new Set(["prompt", "preview", "video_overview", "scene_description", "story_concept", "scene_breakdown", "production_notes"]);
-  return requested.filter((key) => allowed.has(key));
-}
-
-function sanitizeUpdatedBlocks(updatedBlocks, editScope) {
-  const allowedKeys = new Set(pickAllowedPostChatBlocks(editScope));
-  const next = {};
-  Object.entries(updatedBlocks && typeof updatedBlocks === "object" ? updatedBlocks : {}).forEach(([key, value]) => {
-    if (!allowedKeys.has(key)) return;
-    if (typeof value !== "string") return;
-    const text = value.trim();
-    if (!text) return;
-    next[key] = text;
-  });
-  return next;
-}
-
-function hasUsableUpdatedBlocks(updatedBlocks, editScope) {
-  const keys = Object.keys(sanitizeUpdatedBlocks(updatedBlocks, editScope));
-  if (!keys.length) return false;
-  return keys.some(Boolean);
-}
-
-function buildLocalPostChatFallback(deliverableBlocks, editScope, userMessage, language) {
-  const blocks = deliverableBlocks && typeof deliverableBlocks === "object" ? deliverableBlocks : {};
-  const scope = pickAllowedPostChatBlocks(editScope);
-  const text = String(userMessage || "").trim();
-  const lower = text.toLowerCase();
-  const updates = {};
-
-  function withNote(base, noteRu, noteEn) {
-    const note = language === "en" ? noteEn : noteRu;
-    const content = String(base || "").trim();
-    return content ? `${note}
-
-${content}` : note;
-  }
-
-  if (scope.includes("prompt")) {
-    const noteRu = /cta|призыв/i.test(text)
-      ? "Обновил Prompt: усилил CTA и финальное действие пользователя."
-      : /преми|premium/i.test(lower)
-        ? "Обновил Prompt: сделал тон более премиальным и точным."
-        : "Обновил Prompt: усилил формулировку и читаемость для генерации.";
-    const noteEn = /cta|call to action/i.test(text)
-      ? "Updated Prompt: strengthened the CTA and the final user action."
-      : /premium/i.test(lower)
-        ? "Updated Prompt: made the tone more premium and precise."
-        : "Updated Prompt: strengthened the wording and generator-readiness.";
-    updates.prompt = withNote(blocks.prompt, noteRu, noteEn);
-  }
-
-  if (scope.includes("production_notes")) {
-    const noteRu = /cta|призыв/i.test(text)
-      ? "Обновил Production Notes: усилил CTA-слой, коммерческое действие и финальный акцент."
-      : "Обновил Production Notes: уточнил практические акценты и исполнительские указания.";
-    const noteEn = /cta|call to action/i.test(text)
-      ? "Updated Production Notes: strengthened the CTA layer, commercial action and final emphasis."
-      : "Updated Production Notes: refined the practical emphasis and execution notes.";
-    updates.production_notes = withNote(blocks.production_notes, noteRu, noteEn);
-  }
-
-  if (scope.includes("preview")) {
-    updates.preview = withNote(blocks.preview, "Обновил Preview: сделал вход сильнее и чище.", "Updated Preview: made the opening sharper and clearer.");
-  }
-  if (scope.includes("video_overview")) {
-    updates.video_overview = withNote(blocks.video_overview, "Обновил Overview: усилил общий вектор и подачу.", "Updated Overview: strengthened the overall direction and framing.");
-  }
-  if (scope.includes("scene_description")) {
-    updates.scene_description = withNote(blocks.scene_description, "Обновил Scene Description: сделал описание более выразительным.", "Updated Scene Description: made the description more vivid.");
-  }
-  if (scope.includes("story_concept")) {
-    updates.story_concept = withNote(blocks.story_concept, "Обновил Story Concept: сделал идею точнее и сильнее.", "Updated Story Concept: made the concept sharper and stronger.");
-  }
-  if (scope.includes("scene_breakdown")) {
-    updates.scene_breakdown = withNote(blocks.scene_breakdown, "Обновил Scene Breakdown: усилил структуру и полезность для сборки.", "Updated Scene Breakdown: strengthened the structure and execution usefulness.");
-  }
-
-  return updates;
-}
-
-function normalizePostChatResult(parsed, userMessage, deliverableBlocks = {}, language = "ru") {
-  const data = parsed && typeof parsed === "object" ? { ...parsed } : {};
-  const violation = getImmutableChangeViolation(userMessage);
-  const detectedScope = detectPostChatScope(userMessage);
-  const status = String(data.status || "").trim().toLowerCase();
-  const vague = !detectedScope.length && String(userMessage || "").trim().length < 18;
-  const normalized = {
-    status: status || (violation ? "out_of_scope" : (vague ? "needs_clarification" : "improved")),
-    message: typeof data.message === "string" ? data.message.trim() : "",
-    edit_scope: Array.isArray(data.edit_scope) ? data.edit_scope.filter(Boolean) : detectedScope,
-    updated_blocks: data.updated_blocks && typeof data.updated_blocks === "object" ? data.updated_blocks : {},
-    blocked_reason: typeof data.blocked_reason === "string" ? data.blocked_reason.trim() : null
-  };
-  if (violation) {
-    normalized.status = "out_of_scope";
-    normalized.updated_blocks = {};
-    normalized.edit_scope = [];
-    normalized.blocked_reason = violation;
-    if (!normalized.message) {
-      normalized.message = language === "en"
-        ? "This request changes the base direction and needs a new cycle."
-        : "Этот запрос меняет базовую основу результата и требует нового цикла.";
-    }
-  }
-  if (normalized.status === "needs_clarification") {
-    normalized.updated_blocks = {};
-    if (!normalized.message) normalized.message = getClarificationMessage(language);
-  }
-  if (normalized.status === "out_of_scope") {
-    normalized.updated_blocks = {};
-  }
-  if (normalized.status === "improved" && !normalized.edit_scope.length) {
-    normalized.status = "needs_clarification";
-    normalized.updated_blocks = {};
-    normalized.message = normalized.message || getClarificationMessage(language);
-  }
-  normalized.updated_blocks = sanitizeUpdatedBlocks(normalized.updated_blocks, normalized.edit_scope);
-  if (normalized.status === "improved" && !hasUsableUpdatedBlocks(normalized.updated_blocks, normalized.edit_scope)) {
-    normalized.updated_blocks = buildLocalPostChatFallback(deliverableBlocks, normalized.edit_scope, userMessage, language);
-  }
-  if (normalized.status === "improved" && !hasUsableUpdatedBlocks(normalized.updated_blocks, normalized.edit_scope)) {
-    normalized.status = "needs_clarification";
-    normalized.updated_blocks = {};
-    normalized.message = normalized.message || getClarificationMessage(language);
-  }
-  return normalized;
-}
-
-async function repairPostChatExecutionIfNeeded(normalizedParsed, deliverableBlocks, userMessage, language) {
-  const current = normalizedParsed && typeof normalizedParsed === "object" ? { ...normalizedParsed } : {};
-  if (current.status !== "improved") return current;
-  if (hasUsableUpdatedBlocks(current.updated_blocks, current.edit_scope)) return current;
-  const scope = pickAllowedPostChatBlocks(current.edit_scope);
-  if (!scope.length) return current;
-
-  const langRu = language !== "en";
-  const instruction = langRu
-    ? `Ты исправляешь POST_CHAT execution. Верни только JSON с обновлёнными targeted blocks. Не меняй базовую сцену, goal, тип результата. Не возвращай пустой updated_blocks.`
-    : `You are repairing POST_CHAT execution. Return JSON only with the updated targeted blocks. Do not change the base scene, goal or result type. Do not return empty updated_blocks.`;
-  const contextText = langRu
-    ? `Текущий deliverable:
-${compact(deliverableBlocks || {})}
-
-Запрос пользователя:
-${String(userMessage || '').trim()}
-
-Целевой scope:
-${compact(scope)}`
-    : `Current deliverable:
-${compact(deliverableBlocks || {})}
-
-User request:
-${String(userMessage || '').trim()}
-
-Target scope:
-${compact(scope)}`;
-
-  try {
-    const repair = await callOpenAI([
-      { role: "system", content: [{ type: "input_text", text: instruction }] },
-      { role: "user", content: [{ type: "input_text", text: contextText }] }
-    ]);
-    const repaired = normalizePostChatResult(repair.parsed, userMessage, deliverableBlocks, language);
-    if (repaired.status === "improved" && hasUsableUpdatedBlocks(repaired.updated_blocks, repaired.edit_scope)) {
-      return repaired;
-    }
-  } catch (_) {}
-
-  const fallbackBlocks = buildLocalPostChatFallback(deliverableBlocks, scope, userMessage, language);
-  if (hasUsableUpdatedBlocks(fallbackBlocks, scope)) {
-    return {
-      status: "improved",
-      message: current.message || (langRu ? "Обновил выбранный блок deliverable." : "Updated the selected deliverable block."),
-      edit_scope: scope,
-      updated_blocks: fallbackBlocks,
-      blocked_reason: null
-    };
-  }
-
-  return {
-    status: "needs_clarification",
-    message: getClarificationMessage(language),
-    edit_scope: [],
-    updated_blocks: {},
-    blocked_reason: null
-  };
-}
-
 async function callOpenAI(input) {
   const r = await fetch(OPENAI_URL, {
     method: "POST",
@@ -816,65 +383,6 @@ async function callOpenAI(input) {
   }
 
   return { raw, parsed: JSON.parse(raw) };
-}
-
-function normalizeRefinementResult(parsed, currentStage) {
-  const data = parsed && typeof parsed === "object" ? { ...parsed } : {};
-  const stage = normalizeStage(currentStage);
-  const normalizedStage = String(data.response_stage || "").trim().toLowerCase();
-
-  if (stage === "development") {
-    data.response_stage = normalizedStage || "development";
-    data.ready_hint = false;
-    return data;
-  }
-
-  if (data.ready_hint === true) {
-    data.response_stage = "alignment";
-  } else {
-    data.response_stage = normalizedStage || "refinement";
-  }
-
-  return data;
-}
-
-
-function diffPatchPaths(patch) {
-  if (!patch || typeof patch !== "object") return [];
-  return Object.keys(patch).filter(Boolean).sort();
-}
-
-function detectPatchSources(blueprint, patch) {
-  const sources = {};
-  const userMessage = String(blueprint?.system_state?.last_user_message || "").trim();
-  const knownInputs = new Set(Array.isArray(blueprint?.system_state?.known_inputs) ? blueprint.system_state.known_inputs : []);
-  for (const path of diffPatchPaths(patch)) {
-    if (["goal.user_request_summary", "system_state.last_user_message"].includes(path) && userMessage) {
-      sources[path] = "user_input";
-    } else if (knownInputs.has(path.split('.').slice(-1)[0])) {
-      sources[path] = "ui_input";
-    } else {
-      sources[path] = "scriptwriter_interpretation";
-    }
-  }
-  return sources;
-}
-
-function buildServerTrace({ blueprint, action, parsed, normalizedParsed }) {
-  const currentStage = normalizeStage(blueprint?.system_state?.current_stage);
-  const data = normalizedParsed || parsed || {};
-  const patch = data && typeof data.patch === "object" ? data.patch : {};
-  const patchedFields = diffPatchPaths(patch);
-  return {
-    current_stage_before: currentStage,
-    requested_action: action,
-    response_stage: String(data?.response_stage || "").trim().toLowerCase() || null,
-    ready_hint: !!data?.ready_hint,
-    patched_fields: patchedFields,
-    patched_field_sources: detectPatchSources(blueprint, patch),
-    message_present: typeof data?.message === "string" && data.message.trim().length > 0,
-    questions_count: Array.isArray(data?.questions) ? data.questions.length : 0,
-  };
 }
 
 module.exports = async (req, res) => {
@@ -915,38 +423,14 @@ module.exports = async (req, res) => {
       input = buildRefinementInput({ blueprint, userMessage, language });
     } else if (action === "FINAL_ASSEMBLY") {
       input = buildFinalAssemblyInput({ blueprint, resultSchema, language });
-    } else if (action === "POST_CHAT") {
-      if (!userMessage) {
-        return json(res, 400, { error: "Missing userMessage for POST_CHAT" });
-      }
-      input = buildPostChatInput({
-        blueprint,
-        deliverableBlocks: body.deliverableBlocks || payload.deliverableBlocks || {},
-        userMessage,
-        language
-      });
     } else {
       return json(res, 400, {
         error: "Unsupported action",
-        supported_actions: ["SCENE_IDEAS", "REFINEMENT", "FINAL_ASSEMBLY", "POST_CHAT"]
+        supported_actions: ["SCENE_IDEAS", "REFINEMENT", "FINAL_ASSEMBLY"]
       });
     }
 
     const { parsed, raw } = await callOpenAI(input);
-    let normalizedParsed = action === "REFINEMENT"
-      ? normalizeRefinementResult(parsed, blueprint?.system_state?.current_stage)
-      : (action === "POST_CHAT"
-          ? normalizePostChatResult(parsed, userMessage, body.deliverableBlocks || payload.deliverableBlocks || {}, language)
-          : parsed);
-
-    if (action === "POST_CHAT") {
-      normalizedParsed = await repairPostChatExecutionIfNeeded(
-        normalizedParsed,
-        body.deliverableBlocks || payload.deliverableBlocks || {},
-        userMessage,
-        language
-      );
-    }
 
     if (action === "SCENE_IDEAS") {
       return json(res, 200, {
@@ -954,17 +438,15 @@ module.exports = async (req, res) => {
         action,
         ideas: Array.isArray(parsed.ideas) ? parsed.ideas : [],
         data: parsed,
-        raw,
-        trace: buildServerTrace({ blueprint, action, parsed, normalizedParsed: parsed })
+        raw
       });
     }
 
     return json(res, 200, {
       ok: true,
       action,
-      data: normalizedParsed,
-      raw,
-      trace: buildServerTrace({ blueprint, action, parsed, normalizedParsed })
+      data: parsed,
+      raw
     });
   } catch (err) {
     return json(res, 500, {

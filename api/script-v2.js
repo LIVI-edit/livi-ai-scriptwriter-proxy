@@ -290,6 +290,26 @@ function isAllOptionsSelection(text) {
   ].some((re) => re.test(value));
 }
 
+function isDelegationSignal(text) {
+  const value = normalizeRefinementInputText(text).toLowerCase();
+  if (!value) return false;
+  return [
+    'реши сам',
+    'решай сам',
+    'выбери сам',
+    'выбирай сам',
+    'как хочешь',
+    'на твой вкус',
+    'сам реши',
+    'сам выбери',
+    'you decide',
+    'decide yourself',
+    'choose yourself',
+    'pick for me',
+    'as you like'
+  ].includes(value);
+}
+
 function buildAnchorPatchValue(anchorPath, userMessage, language = 'ru') {
   const options = getSafeAnchorOptions(anchorPath, language);
   if (isAllOptionsSelection(userMessage) && options.length) {
@@ -305,7 +325,7 @@ function buildAnchorPatchValue(anchorPath, userMessage, language = 'ru') {
   }
 
   const raw = normalizeRefinementInputText(userMessage);
-  if (!raw || isWeakAcknowledgement(raw)) return '';
+  if (!raw || isWeakAcknowledgement(raw) || isDelegationSignal(raw)) return '';
   return raw;
 }
 
@@ -443,6 +463,17 @@ function sanitizeRefinementPatch(patch, blueprint) {
       if (value && /\blivi\b|scriptwriter/i.test(value)) delete next[path];
     });
   }
+  [
+    'goal.user_request_summary',
+    'goal.video_goal',
+    'goal.audience',
+    'marketing_layer.message',
+    'marketing_layer.product_focus',
+    'marketing_layer.cta'
+  ].forEach((path) => {
+    const value = String(next[path] || '').trim();
+    if (value && isDelegationSignal(value)) delete next[path];
+  });
   return next;
 }
 

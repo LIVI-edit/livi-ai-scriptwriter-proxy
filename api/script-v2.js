@@ -98,6 +98,7 @@ function getPriorityAnchors(blueprint, patch = {}, userMessage = "", maxAnchors 
 
 function getAnchorOptions(path, language = 'ru') {
   const ru = {
+    'goal.video_goal': ['показать пользу продукта', 'вызвать интерес и желание попробовать', 'подтолкнуть к конкретному действию'],
     'goal.audience': ['маркетологи и performance-команды', 'контент-команды и copy/creative', 'малый бизнес / founders'],
     'marketing_layer.message': ['экономия времени', 'повышение качества и ясности', 'быстрое превращение идеи в структуру'],
     'marketing_layer.product_focus': ['AI-генерация сценария', 'структурирование и сборка идеи', 'ускорение командной работы'],
@@ -110,6 +111,7 @@ function getAnchorOptions(path, language = 'ru') {
     'visual_direction.visual_style': ['cinematic premium', 'clean minimal', 'dynamic commercial']
   };
   const en = {
+    'goal.video_goal': ['show the product benefit', 'create interest and desire to try it', 'drive a concrete action'],
     'goal.audience': ['marketers and performance teams', 'content teams and copy/creative', 'small business / founders'],
     'marketing_layer.message': ['save time', 'improve quality and clarity', 'turn ideas into structure faster'],
     'marketing_layer.product_focus': ['AI script generation', 'idea structuring and assembly', 'faster team workflow'],
@@ -122,6 +124,51 @@ function getAnchorOptions(path, language = 'ru') {
     'visual_direction.visual_style': ['cinematic premium', 'clean minimal', 'dynamic commercial']
   };
   return ((language === 'en' ? en : ru)[path] || []).slice(0, 3);
+}
+
+function getGenericAnchorFallbackOptions(path, language = 'ru') {
+  const map = language === 'en'
+    ? {
+        goal: ['focus on clarity', 'focus on benefit', 'focus on action'],
+        audience: ['specialists', 'teams', 'small business'],
+        message: ['clarity', 'value', 'speed'],
+        focus: ['hero', 'product', 'atmosphere'],
+        event: ['reveal', 'choice', 'transformation'],
+        development: ['more movement', 'softer reveal', 'clear payoff'],
+        location: ['digital space', 'workspace', 'abstract environment'],
+        character: ['expert', 'creator', 'abstract protagonist'],
+        style: ['cinematic', 'clean', 'dynamic']
+      }
+    : {
+        goal: ['сделать смысл яснее', 'усилить пользу', 'подвести к действию'],
+        audience: ['специалисты', 'команды', 'малый бизнес'],
+        message: ['ясность', 'ценность', 'скорость'],
+        focus: ['герой', 'продукт', 'атмосфера'],
+        event: ['reveal', 'выбор', 'трансформация'],
+        development: ['больше движения', 'мягче раскрытие', 'чёткий payoff'],
+        location: ['цифровое пространство', 'workspace', 'абстрактная среда'],
+        character: ['эксперт', 'креатор', 'абстрактный герой'],
+        style: ['cinematic', 'clean', 'dynamic']
+      };
+
+  if (/audience/i.test(path)) return map.audience.slice(0, 3);
+  if (/message/i.test(path)) return map.message.slice(0, 3);
+  if (/video_goal|goal/i.test(path)) return map.goal.slice(0, 3);
+  if (/product_focus|main_focus|focus/i.test(path)) return map.focus.slice(0, 3);
+  if (/core_event|event/i.test(path)) return map.event.slice(0, 3);
+  if (/scene_development|development/i.test(path)) return map.development.slice(0, 3);
+  if (/location/i.test(path)) return map.location.slice(0, 3);
+  if (/main_character|character/i.test(path)) return map.character.slice(0, 3);
+  if (/visual_style|style/i.test(path)) return map.style.slice(0, 3);
+  return language === 'en'
+    ? ['make it clearer', 'make it stronger', 'make it more actionable']
+    : ['сделать яснее', 'сделать сильнее', 'сделать практичнее'];
+}
+
+function getSafeAnchorOptions(path, language = 'ru') {
+  const direct = getAnchorOptions(path, language).filter(Boolean).slice(0, 3);
+  if (direct.length >= 2) return direct;
+  return getGenericAnchorFallbackOptions(path, language).filter(Boolean).slice(0, 3);
 }
 
 function getAnchorLabel(path, language = 'ru') {
@@ -184,6 +231,28 @@ function getAnchorClarification(path, language = 'ru') {
   return (language === 'en' ? en[path] : ru[path]) || getAnchorLabel(path, language);
 }
 
+function ensureRefinementBlueprintIntegrity(blueprint) {
+  const next = mergePatchIntoBlueprint(blueprint || {}, {});
+  const seedScene = String(getByPathLocal(next, 'scene_core.seed_scene') || '').trim();
+  const lockedSeed = String(getByPathLocal(next, 'system_state.last_locked_seed_scene') || '').trim();
+  const setupSeed = String(getByPathLocal(next, 'narrative.scene_setup') || '').trim();
+  const recoveredSeed = seedScene || lockedSeed || setupSeed;
+
+  if (recoveredSeed && !seedScene) {
+    next.scene_core = next.scene_core || {};
+    next.scene_core.seed_scene = recoveredSeed;
+  }
+  if (recoveredSeed && !lockedSeed) {
+    next.system_state = next.system_state || {};
+    next.system_state.last_locked_seed_scene = recoveredSeed;
+  }
+  if (recoveredSeed && !setupSeed) {
+    next.narrative = next.narrative || {};
+    next.narrative.scene_setup = recoveredSeed;
+  }
+  return next;
+}
+
 function isClarificationRequest(text) {
   const value = String(text || '').trim().toLowerCase();
   if (!value) return false;
@@ -202,7 +271,7 @@ function isClarificationRequest(text) {
 }
 
 function buildLoopMessage(blueprint, patch = {}, userMessage = '', language = 'ru') {
-  const merged = mergePatchIntoBlueprint(blueprint, patch);
+  const merged = ensureRefinementBlueprintIntegrity(mergePatchIntoBlueprint(blueprint, patch));
   const priority = getPriorityAnchors(merged, {}, userMessage, 2);
   const activeAnchor = priority[0] || null;
   const seedScene = String(merged?.scene_core?.seed_scene || '').trim();
@@ -220,7 +289,7 @@ function buildLoopMessage(blueprint, patch = {}, userMessage = '', language = 'r
       lines.push(`- ${getAnchorClarification(activeAnchor, language)}`);
       lines.push('');
       lines.push('Options:');
-      getAnchorOptions(activeAnchor, language).forEach((option, index) => lines.push(`${index + 1}. ${option}`));
+      getSafeAnchorOptions(activeAnchor, language).forEach((option, index) => lines.push(`${index + 1}. ${option}`));
       lines.push('');
       lines.push('Choose one option or phrase your own version.');
     }
@@ -235,7 +304,7 @@ function buildLoopMessage(blueprint, patch = {}, userMessage = '', language = 'r
       lines.push(`- ${getAnchorClarification(activeAnchor, language)}`);
       lines.push('');
       lines.push('Варианты:');
-      getAnchorOptions(activeAnchor, language).forEach((option, index) => lines.push(`${index + 1}. ${option}`));
+      getSafeAnchorOptions(activeAnchor, language).forEach((option, index) => lines.push(`${index + 1}. ${option}`));
       lines.push('');
       lines.push('Выбери один вариант или сформулируй свой.');
     }
@@ -1078,6 +1147,7 @@ async function callOpenAI(input) {
 
 function normalizeRefinementResult(parsed, currentStage, blueprint, userMessage = "") {
   const data = parsed && typeof parsed === "object" ? { ...parsed } : {};
+  blueprint = ensureRefinementBlueprintIntegrity(blueprint);
   const stage = normalizeStage(currentStage);
   data.patch = sanitizeRefinementPatch(data.patch, blueprint);
   const normalizedStage = String(data.response_stage || "").trim().toLowerCase();
@@ -1174,7 +1244,9 @@ module.exports = async (req, res) => {
     const body = safeParseBody(req);
     const payload = body.payload || {};
     const action = normalizeAction(body.action);
-    const blueprint = body.blueprint || payload.blueprint || {};
+    const blueprint = action === "REFINEMENT"
+      ? ensureRefinementBlueprintIntegrity(body.blueprint || payload.blueprint || {})
+      : (body.blueprint || payload.blueprint || {});
     const uiInputs = body.uiInputs || payload.uiInputs || {};
     const resultSchema = body.resultSchema || payload.resultSchema || {};
     const userMessage = typeof body.userMessage === "string"
@@ -1195,7 +1267,7 @@ module.exports = async (req, res) => {
         return json(res, 400, { error: "Missing userMessage for REFINEMENT" });
       }
       if (!blueprint?.scene_core?.seed_scene || !String(blueprint.scene_core.seed_scene).trim()) {
-        return json(res, 400, { error: "Missing scene_core.seed_scene for REFINEMENT" });
+        return json(res, 400, { error: "Missing scene_core.seed_scene for REFINEMENT", recovered: false });
       }
       input = buildRefinementInput({ blueprint, userMessage, language });
     } else if (action === "FINAL_ASSEMBLY") {

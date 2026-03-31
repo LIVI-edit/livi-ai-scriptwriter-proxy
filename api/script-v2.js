@@ -411,13 +411,14 @@ function buildSceneIdeasInput({ blueprint, uiInputs, language }) {
 
   const instruction = langRu
     ? `
-Сгенерируй 3 идеи сцены для LiVi AI Scriptwriter.
+Сгенерируй 3 идеи сцены на основе входных данных пользователя.
 
 Задача:
 - НЕ писать длинный сценарий.
 - НЕ собирать финальный результат.
 - НЕ повторять уже известные UI inputs как вопросы.
 - Использовать known inputs как уже заданные.
+- Не подставлять по умолчанию, что видео про LiVi, AI Scriptwriter, сам продукт или саму платформу, если это не следует прямо из входных данных пользователя.
 - Вернуть только 3 варианта сцены:
   1) exact
   2) variation
@@ -440,13 +441,14 @@ function buildSceneIdeasInput({ blueprint, uiInputs, language }) {
 }
 `.trim()
     : `
-Generate 3 scene ideas for LiVi AI Scriptwriter.
+Generate 3 scene ideas based on the user's provided inputs.
 
 Task:
 - Do NOT write a full script.
 - Do NOT assemble the final deliverable.
 - Do NOT ask again about known UI inputs.
 - Treat known inputs as already fixed.
+- Do not assume by default that the video is about LiVi, the AI Scriptwriter, the product itself, or the platform unless that is explicitly present in the user's inputs.
 - Return only 3 scene options:
   1) exact
   2) variation
@@ -572,6 +574,7 @@ Rules:
 - Обновить сцену только там, где это логично.
 - Не пересоздавать Blueprint заново.
 - Не дублировать известные данные.
+- Не подставлять по умолчанию, что сцена или видео про LiVi / AI Scriptwriter / сам продукт, если это прямо не следует из Blueprint или ответа пользователя.
 - Считать scene_core.seed_scene уже зафиксированным источником истины сцены.
 - Не переписывать и не терять seed scene.
 - Обновлять Blueprint только patch-подходом.
@@ -610,6 +613,7 @@ Task:
 - Update the scene only where it makes sense.
 - Do not recreate the Blueprint from scratch.
 - Do not repeat known data.
+- Do not assume by default that the scene or video is about LiVi / the AI Scriptwriter / the product itself unless that follows explicitly from the Blueprint or the user's reply.
 - Treat scene_core.seed_scene as the locked source of truth for the scene.
 - Do not overwrite or lose the seed scene.
 - Update the Blueprint only via patch logic.

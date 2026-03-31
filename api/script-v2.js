@@ -1145,6 +1145,31 @@ async function callOpenAI(input) {
   return { raw, parsed: JSON.parse(raw) };
 }
 
+function buildStructuredChoiceRefinementPatch(blueprint, refinementInput = {}, language = "ru") {
+  const inputMode = String(refinementInput?.inputMode || "").trim().toLowerCase();
+  const choice = refinementInput?.structuredChoice && typeof refinementInput.structuredChoice === "object"
+    ? refinementInput.structuredChoice
+    : null;
+
+  if (inputMode !== "structured_choice" || !choice) return {};
+
+  const targetAnchor = String(choice.target_anchor || "").trim();
+  if (!targetAnchor) return {};
+
+  let value = choice.selected_option_value;
+  if (value === undefined || value === null || String(value).trim() === "") {
+    const optionIndex = Number(choice.selected_option_id || 0);
+    const options = getSafeAnchorOptions(targetAnchor, language);
+    if (Number.isInteger(optionIndex) && optionIndex >= 1 && optionIndex <= options.length) {
+      value = options[optionIndex - 1];
+    }
+  }
+
+  const finalValue = String(value || "").trim();
+  if (!finalValue) return {};
+  return { [targetAnchor]: finalValue };
+}
+
 function normalizeRefinementResult(parsed, currentStage, blueprint, refinementInput = {}) {
   const data = parsed && typeof parsed === "object" ? { ...parsed } : {};
   blueprint = ensureRefinementBlueprintIntegrity(blueprint);

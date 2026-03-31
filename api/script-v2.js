@@ -271,8 +271,31 @@ function combineAnchorOptionValues(values, language = 'ru') {
   return items.join(' + ');
 }
 
+function isAllOptionsSelection(text) {
+  const value = normalizeRefinementInputText(text).toLowerCase();
+  if (!value) return false;
+  return [
+    /^all$/i,
+    /^all\s+of\s+them$/i,
+    /^everything$/i,
+    /^mix$/i,
+    /^both$/i,
+    /^all\s+options$/i,
+    /^все$/i,
+    /^всё$/i,
+    /^все\s+варианты$/i,
+    /^все\s+опции$/i,
+    /^смешать$/i,
+    /^микс$/i
+  ].some((re) => re.test(value));
+}
+
 function buildAnchorPatchValue(anchorPath, userMessage, language = 'ru') {
   const options = getSafeAnchorOptions(anchorPath, language);
+  if (isAllOptionsSelection(userMessage) && options.length) {
+    return combineAnchorOptionValues(options, language);
+  }
+
   const selectedIndexes = parseSelectedOptionIndexes(userMessage, options.length || 3);
   if (selectedIndexes.length) {
     const selectedValues = selectedIndexes
@@ -418,11 +441,6 @@ function sanitizeRefinementPatch(patch, blueprint) {
     ['goal.user_request_summary', 'scene_core.main_focus', 'marketing_layer.message', 'marketing_layer.product_focus'].forEach((path) => {
       const value = String(next[path] || '').trim();
       if (value && /\blivi\b|scriptwriter/i.test(value)) delete next[path];
-    });
-  }
-  if (hasCommercialGoalContext(blueprint)) {
-    ['goal.video_goal', 'goal.audience', 'marketing_layer.message', 'marketing_layer.product_focus', 'marketing_layer.cta'].forEach((path) => {
-      if (Object.prototype.hasOwnProperty.call(next, path)) delete next[path];
     });
   }
   return next;

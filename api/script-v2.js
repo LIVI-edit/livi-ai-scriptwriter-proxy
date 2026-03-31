@@ -231,112 +231,6 @@ function getAnchorClarification(path, language = 'ru') {
   return (language === 'en' ? en[path] : ru[path]) || getAnchorLabel(path, language);
 }
 
-
-function getActiveAnchorPath(blueprint, patch = {}, userMessage = '') {
-  const merged = ensureRefinementBlueprintIntegrity(mergePatchIntoBlueprint(blueprint, patch));
-  const stored = Array.isArray(merged?.system_state?.refinement_focus_anchors)
-    ? merged.system_state.refinement_focus_anchors.filter(Boolean)
-    : [];
-  const unresolvedStored = stored.filter((path) => {
-    const value = getByPathLocal(merged, path);
-    return !(typeof value === 'string' ? value.trim() : value);
-  });
-  if (unresolvedStored.length) return unresolvedStored[0];
-  const priority = getPriorityAnchors(merged, {}, userMessage, 1);
-  return priority[0] || null;
-}
-
-function normalizeRefinementInputText(text) {
-  return String(text || '').trim().replace(/\s+/g, ' ');
-}
-
-function parseSelectedOptionIndexes(userMessage, maxOptions = 3) {
-  const text = normalizeRefinementInputText(userMessage).toLowerCase();
-  if (!text) return [];
-  const matches = text.match(/\d+/g) || [];
-  const indexes = [];
-  matches.forEach((token) => {
-    const value = Number(token);
-    if (Number.isInteger(value) && value >= 1 && value <= maxOptions && !indexes.includes(value)) {
-      indexes.push(value);
-    }
-  });
-  return indexes;
-}
-
-function combineAnchorOptionValues(values, language = 'ru') {
-  const items = (values || []).map((value) => String(value || '').trim()).filter(Boolean);
-  if (!items.length) return '';
-  if (items.length === 1) return items[0];
-  return items.join(' + ');
-}
-
-function isAllOptionsSelection(text) {
-  const value = normalizeRefinementInputText(text).toLowerCase();
-  if (!value) return false;
-  return [
-    /^all$/i,
-    /^all\s+of\s+them$/i,
-    /^everything$/i,
-    /^mix$/i,
-    /^both$/i,
-    /^all\s+options$/i,
-    /^все$/i,
-    /^всё$/i,
-    /^все\s+варианты$/i,
-    /^все\s+опции$/i,
-    /^смешать$/i,
-    /^микс$/i
-  ].some((re) => re.test(value));
-}
-
-function isDelegationSignal(text) {
-  const value = normalizeRefinementInputText(text).toLowerCase();
-  if (!value) return false;
-  return [
-    'реши сам',
-    'решай сам',
-    'выбери сам',
-    'выбирай сам',
-    'как хочешь',
-    'на твой вкус',
-    'сам реши',
-    'сам выбери',
-    'you decide',
-    'decide yourself',
-    'choose yourself',
-    'pick for me',
-    'as you like'
-  ].includes(value);
-}
-
-function buildAnchorPatchValue(anchorPath, userMessage, language = 'ru') {
-  const options = getSafeAnchorOptions(anchorPath, language);
-  if (isAllOptionsSelection(userMessage) && options.length) {
-    return combineAnchorOptionValues(options, language);
-  }
-
-  const selectedIndexes = parseSelectedOptionIndexes(userMessage, options.length || 3);
-  if (selectedIndexes.length) {
-    const selectedValues = selectedIndexes
-      .map((index) => options[index - 1])
-      .filter(Boolean);
-    if (selectedValues.length) return combineAnchorOptionValues(selectedValues, language);
-  }
-
-  const raw = normalizeRefinementInputText(userMessage);
-  if (!raw || isWeakAcknowledgement(raw) || isDelegationSignal(raw)) return '';
-  return raw;
-}
-
-function buildDeterministicRefinementPatch(blueprint, userMessage, language = 'ru') {
-  const activeAnchor = getActiveAnchorPath(blueprint, {}, userMessage);
-  if (!activeAnchor) return {};
-  const value = buildAnchorPatchValue(activeAnchor, userMessage, language);
-  if (!value) return {};
-  return { [activeAnchor]: value };
-}
-
 function ensureRefinementBlueprintIntegrity(blueprint) {
   const next = mergePatchIntoBlueprint(blueprint || {}, {});
   const seedScene = String(getByPathLocal(next, 'scene_core.seed_scene') || '').trim();
@@ -463,17 +357,11 @@ function sanitizeRefinementPatch(patch, blueprint) {
       if (value && /\blivi\b|scriptwriter/i.test(value)) delete next[path];
     });
   }
-  [
-    'goal.user_request_summary',
-    'goal.video_goal',
-    'goal.audience',
-    'marketing_layer.message',
-    'marketing_layer.product_focus',
-    'marketing_layer.cta'
-  ].forEach((path) => {
-    const value = String(next[path] || '').trim();
-    if (value && isDelegationSignal(value)) delete next[path];
-  });
+  if (hasCommercialGoalContext(blueprint)) {
+    ['goal.video_goal', 'goal.audience', 'marketing_layer.message', 'marketing_layer.product_focus', 'marketing_layer.cta'].forEach((path) => {
+      if (Object.prototype.hasOwnProperty.call(next, path)) delete next[path];
+    });
+  }
   return next;
 }
 
@@ -1257,37 +1145,36 @@ async function callOpenAI(input) {
   return { raw, parsed: JSON.parse(raw) };
 }
 
-function normalizeRefinementResult(parsed, currentStage, blueprint, userMessage = "") {
+function normalizeRefinementResult(parsed, currentStage, blueprint, refinementInput = {}) {
   const data = parsed && typeof parsed === "object" ? { ...parsed } : {};
   blueprint = ensureRefinementBlueprintIntegrity(blueprint);
   const stage = normalizeStage(currentStage);
-  const language = blueprint?.meta?.language || 'ru';
-  const deterministicPatch = buildDeterministicRefinementPatch(blueprint, userMessage, language);
+  const userMessage = typeof refinementInput === 'string'
+    ? refinementInput
+    : String(refinementInput?.userMessage || "").trim();
+  const language = blueprint?.meta?.language || refinementInput?.language || 'ru';
+  const structuredChoicePatch = buildStructuredChoiceRefinementPatch(blueprint, {
+    userMessage,
+    inputMode: refinementInput?.inputMode,
+    structuredChoice: refinementInput?.structuredChoice
+  }, language);
   data.patch = {
     ...(sanitizeRefinementPatch(data.patch, blueprint) || {}),
-    ...deterministicPatch
+    ...structuredChoicePatch
   };
   const normalizedStage = String(data.response_stage || "").trim().toLowerCase();
   const weakAck = isWeakAcknowledgement(userMessage);
 
   if (stage === "development") {
-    const language = blueprint?.meta?.language || 'ru';
-    const mergedPatch = { ...(data.patch || {}) };
-    const priorityAnchors = getPriorityAnchors(blueprint, mergedPatch, userMessage, 1);
-
-    data.response_stage = "refinement";
+    data.response_stage = normalizedStage || "development";
     data.ready_hint = false;
-    data.questions = [];
-    data.patch = {
-      ...mergedPatch,
-      "system_state.refinement_focus_anchors": priorityAnchors
-    };
-    data.message = buildLoopMessage(blueprint, data.patch, userMessage, language);
+    data.patch = { ...(data.patch || {}), "system_state.refinement_focus_anchors": getPriorityAnchors(blueprint, data.patch || {}, userMessage, 2) };
+    if (!String(data.message || '').trim()) data.message = buildLoopMessage(blueprint, data.patch, userMessage, language);
     return data;
   }
 
   const criticalMissing = getCriticalAlignmentMissingFromState(blueprint, data.patch || {});
-  const priorityAnchors = getPriorityAnchors(blueprint, data.patch || {}, userMessage, 1);
+  const priorityAnchors = getPriorityAnchors(blueprint, data.patch || {}, userMessage, 2);
   if (weakAck) {
     ["goal.video_goal", "goal.audience", "marketing_layer.message", "marketing_layer.product_focus", "marketing_layer.cta"].forEach((path) => {
       delete data.patch?.[path];
@@ -1299,13 +1186,13 @@ function normalizeRefinementResult(parsed, currentStage, blueprint, userMessage 
     data.ready_hint = false;
     data.response_stage = "refinement";
     data.questions = [];
-    data.message = buildLoopMessage(blueprint, data.patch, userMessage, blueprint?.meta?.language || 'ru');
+    data.message = buildLoopMessage(blueprint, data.patch, userMessage, language);
   } else if (data.ready_hint === true && !criticalMissing.length && !priorityAnchors.length) {
     data.response_stage = "alignment";
   } else {
     data.response_stage = normalizedStage || "refinement";
     if (data.response_stage === 'refinement') {
-      data.message = buildLoopMessage(blueprint, data.patch, userMessage, blueprint?.meta?.language || 'ru');
+      data.message = buildLoopMessage(blueprint, data.patch, userMessage, language);
       data.questions = [];
     }
   }
@@ -1383,6 +1270,19 @@ module.exports = async (req, res) => {
       return json(res, 500, { error: "Missing OPENAI_API_KEY" });
     }
 
+    const refinementInput = action === "REFINEMENT"
+      ? {
+          userMessage,
+          inputMode: typeof body.inputMode === 'string'
+            ? body.inputMode
+            : (typeof payload.inputMode === 'string' ? payload.inputMode : ''),
+          structuredChoice: (body.structuredChoice && typeof body.structuredChoice === 'object')
+            ? body.structuredChoice
+            : ((payload.structuredChoice && typeof payload.structuredChoice === 'object') ? payload.structuredChoice : null),
+          language
+        }
+      : null;
+
     let input;
 
     if (action === "SCENE_IDEAS") {
@@ -1416,7 +1316,7 @@ module.exports = async (req, res) => {
 
     const { parsed, raw } = await callOpenAI(input);
     let normalizedParsed = action === "REFINEMENT"
-      ? normalizeRefinementResult(parsed, blueprint?.system_state?.current_stage, blueprint, userMessage)
+      ? normalizeRefinementResult(parsed, blueprint?.system_state?.current_stage, blueprint, refinementInput || { userMessage, language })
       : (action === "POST_CHAT"
           ? normalizePostChatResult(parsed, userMessage, body.deliverableBlocks || payload.deliverableBlocks || {}, language)
           : parsed);

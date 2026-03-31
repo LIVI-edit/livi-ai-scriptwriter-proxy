@@ -1240,10 +1240,18 @@ function normalizeRefinementResult(parsed, currentStage, blueprint, userMessage 
   const weakAck = isWeakAcknowledgement(userMessage);
 
   if (stage === "development") {
-    data.response_stage = normalizedStage || "development";
+    const language = blueprint?.meta?.language || 'ru';
+    const mergedPatch = { ...(data.patch || {}) };
+    const priorityAnchors = getPriorityAnchors(blueprint, mergedPatch, userMessage, 1);
+
+    data.response_stage = "refinement";
     data.ready_hint = false;
-    data.patch = { ...(data.patch || {}), "system_state.refinement_focus_anchors": getPriorityAnchors(blueprint, data.patch || {}, userMessage, 1) };
-    if (!String(data.message || '').trim()) data.message = buildLoopMessage(blueprint, data.patch, userMessage, blueprint?.meta?.language || 'ru');
+    data.questions = [];
+    data.patch = {
+      ...mergedPatch,
+      "system_state.refinement_focus_anchors": priorityAnchors
+    };
+    data.message = buildLoopMessage(blueprint, data.patch, userMessage, language);
     return data;
   }
 

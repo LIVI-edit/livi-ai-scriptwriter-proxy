@@ -202,12 +202,12 @@ function getCriticalAlignmentMissingFromState(blueprint, patch = {}) {
   if (!hasCommercialGoalContext(blueprint)) return [];
   const merged = mergePatchIntoBlueprint(blueprint, patch);
   const candidates = [
+    'goal.video_goal',
     'goal.audience',
     'marketing_layer.message',
-    'marketing_layer.product_focus'
+    'marketing_layer.product_focus',
+    'marketing_layer.cta'
   ];
-  const hasCommercialFrame = !!String(merged?.marketing_layer?.message || '').trim() || !!String(merged?.marketing_layer?.product_focus || '').trim();
-  if (hasCommercialFrame) candidates.push('marketing_layer.cta');
   return candidates.filter((path) => {
     const finalValue = getByPathLocal(merged, path);
     if (Array.isArray(finalValue)) return finalValue.length === 0;
@@ -234,6 +234,11 @@ function sanitizeRefinementPatch(patch, blueprint) {
     ['goal.user_request_summary', 'scene_core.main_focus', 'marketing_layer.message', 'marketing_layer.product_focus'].forEach((path) => {
       const value = String(next[path] || '').trim();
       if (value && /\blivi\b|scriptwriter/i.test(value)) delete next[path];
+    });
+  }
+  if (hasCommercialGoalContext(blueprint)) {
+    ['goal.video_goal', 'goal.audience', 'marketing_layer.message', 'marketing_layer.product_focus', 'marketing_layer.cta'].forEach((path) => {
+      if (Object.prototype.hasOwnProperty.call(next, path)) delete next[path];
     });
   }
   return next;
@@ -1037,18 +1042,18 @@ function normalizeRefinementResult(parsed, currentStage, blueprint, userMessage 
   const criticalMissing = getCriticalAlignmentMissingFromState(blueprint, data.patch || {});
   const priorityAnchors = getPriorityAnchors(blueprint, data.patch || {}, userMessage, 2);
   if (weakAck) {
-    ["goal.audience", "marketing_layer.message", "marketing_layer.product_focus", "marketing_layer.cta"].forEach((path) => {
+    ["goal.video_goal", "goal.audience", "marketing_layer.message", "marketing_layer.product_focus", "marketing_layer.cta"].forEach((path) => {
       delete data.patch?.[path];
     });
   }
   data.patch = { ...(data.patch || {}), "system_state.refinement_focus_anchors": priorityAnchors };
 
-  if (criticalMissing.length || priorityAnchors.length) {
+  if (criticalMissing.length || priorityAnchors.length || weakAck) {
     data.ready_hint = false;
     data.response_stage = "refinement";
     data.questions = [];
     data.message = buildLoopMessage(blueprint, data.patch, userMessage, blueprint?.meta?.language || 'ru');
-  } else if (data.ready_hint === true) {
+  } else if (data.ready_hint === true && !criticalMissing.length && !priorityAnchors.length) {
     data.response_stage = "alignment";
   } else {
     data.response_stage = normalizedStage || "refinement";
@@ -1088,6 +1093,9 @@ function buildServerTrace({ blueprint, action, parsed, normalizedParsed }) {
   const data = normalizedParsed || parsed || {};
   const patch = data && typeof data.patch === "object" ? data.patch : {};
   const patchedFields = diffPatchPaths(patch);
+  const merged = mergePatchIntoBlueprint(blueprint || {}, patch || {});
+  const criticalAlignmentMissing = getCriticalAlignmentMissingFromState(blueprint || {}, patch || {});
+  const minimumUsableMissing = Array.isArray(merged?.system_state?.minimum_usable_missing) ? merged.system_state.minimum_usable_missing : [];
   return {
     current_stage_before: currentStage,
     requested_action: action,
@@ -1095,6 +1103,8 @@ function buildServerTrace({ blueprint, action, parsed, normalizedParsed }) {
     ready_hint: !!data?.ready_hint,
     patched_fields: patchedFields,
     patched_field_sources: detectPatchSources(blueprint, patch),
+    critical_alignment_missing: criticalAlignmentMissing,
+    minimum_usable_missing: minimumUsableMissing,
     message_present: typeof data?.message === "string" && data.message.trim().length > 0,
     questions_count: Array.isArray(data?.questions) ? data.questions.length : 0,
   };

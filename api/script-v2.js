@@ -126,6 +126,7 @@ function getAnchorOptions(path, language = 'ru') {
 
 function getAnchorLabel(path, language = 'ru') {
   const ru = {
+    'goal.video_goal': 'цель ролика',
     'goal.audience': 'аудитория',
     'marketing_layer.message': 'основной посыл',
     'marketing_layer.product_focus': 'продуктовый акцент',
@@ -138,6 +139,7 @@ function getAnchorLabel(path, language = 'ru') {
     'visual_direction.visual_style': 'визуальный стиль'
   };
   const en = {
+    'goal.video_goal': 'video goal',
     'goal.audience': 'audience',
     'marketing_layer.message': 'core message',
     'marketing_layer.product_focus': 'product focus',
@@ -152,44 +154,94 @@ function getAnchorLabel(path, language = 'ru') {
   return (language === 'en' ? en[path] : ru[path]) || path;
 }
 
+function getAnchorClarification(path, language = 'ru') {
+  const ru = {
+    'goal.video_goal': 'какую главную цель должен выполнить ролик',
+    'goal.audience': 'для кого этот ролик в первую очередь',
+    'marketing_layer.message': 'какая основная мысль должна остаться у зрителя',
+    'marketing_layer.product_focus': 'на каком преимуществе продукта делаем акцент',
+    'marketing_layer.cta': 'к какому действию подводим зрителя',
+    'narrative.scene_development': 'как дальше развивается сцена после начального кадра',
+    'scene_core.core_event': 'какое главное событие должно произойти в сцене',
+    'scene_core.main_focus': 'на чём должен быть главный фокус внимания',
+    'participants.main_character': 'кто главный участник сцены',
+    'environment.location': 'в каком пространстве это происходит',
+    'visual_direction.visual_style': 'какой визуальный стиль должен вести сцену'
+  };
+  const en = {
+    'goal.video_goal': 'what main goal the video should accomplish',
+    'goal.audience': 'who this video is primarily for',
+    'marketing_layer.message': 'what main message should stay with the viewer',
+    'marketing_layer.product_focus': 'what product advantage should carry the focus',
+    'marketing_layer.cta': 'what action we want the viewer to take',
+    'narrative.scene_development': 'how the scene develops after the opening frame',
+    'scene_core.core_event': 'what main event should happen in the scene',
+    'scene_core.main_focus': 'what should hold the main focus of attention',
+    'participants.main_character': 'who the main participant of the scene is',
+    'environment.location': 'what space this takes place in',
+    'visual_direction.visual_style': 'what visual style should drive the scene'
+  };
+  return (language === 'en' ? en[path] : ru[path]) || getAnchorLabel(path, language);
+}
+
+function isClarificationRequest(text) {
+  const value = String(text || '').trim().toLowerCase();
+  if (!value) return false;
+  return [
+    /что\s+мне\s+нужно\s+уточнить/i,
+    /что\s+уточнить/i,
+    /что\s+выбрать/i,
+    /не\s+понял/i,
+    /не\s+поняла/i,
+    /что\s+ты\s+имеешь\s+в\s+виду/i,
+    /what\s+do\s+i\s+need\s+to\s+clarify/i,
+    /what\s+should\s+i\s+choose/i,
+    /i\s+do\s+not\s+understand/i,
+    /what\s+do\s+you\s+mean/i
+  ].some((re) => re.test(value));
+}
+
 function buildLoopMessage(blueprint, patch = {}, userMessage = '', language = 'ru') {
   const merged = mergePatchIntoBlueprint(blueprint, patch);
   const priority = getPriorityAnchors(merged, {}, userMessage, 2);
+  const activeAnchor = priority[0] || null;
   const seedScene = String(merged?.scene_core?.seed_scene || '').trim();
   const concept = String(merged?.scene_core?.concept_line || merged?.scene_core?.main_focus || '').trim();
+  const clarificationRequest = isClarificationRequest(userMessage);
   const lines = [];
   if (language === 'en') {
     lines.push('Locked so far:');
     if (seedScene) lines.push(`- base scene: ${seedScene}`);
     if (concept) lines.push(`- direction: ${concept}`);
-    if (priority.length) {
+    if (!seedScene && !concept) lines.push('- the base scene is fixed and the refinement loop is narrowing the direction.');
+    if (activeAnchor) {
       lines.push('');
-      lines.push('Critical to complete now:');
-      priority.forEach((path) => {
-        lines.push(`- ${getAnchorLabel(path, language)}`);
-        getAnchorOptions(path, language).forEach((option, index) => lines.push(`  ${index + 1}) ${option}`));
-      });
+      lines.push(clarificationRequest ? 'Here is what needs clarification right now:' : 'Right now we need to clarify:');
+      lines.push(`- ${getAnchorClarification(activeAnchor, language)}`);
       lines.push('');
-      lines.push('Send one concrete choice for the current items, and then the loop will move forward.');
+      lines.push('Options:');
+      getAnchorOptions(activeAnchor, language).forEach((option, index) => lines.push(`${index + 1}. ${option}`));
+      lines.push('');
+      lines.push('Choose one option or phrase your own version.');
     }
   } else {
     lines.push('Уже зафиксировано:');
     if (seedScene) lines.push(`- базовая сцена: ${seedScene}`);
     if (concept) lines.push(`- вектор: ${concept}`);
-    if (priority.length) {
+    if (!seedScene && !concept) lines.push('- базовая сцена уже удерживается, и refinement сейчас сужает нужный вектор.');
+    if (activeAnchor) {
       lines.push('');
-      lines.push('Сейчас критично добрать:');
-      priority.forEach((path) => {
-        lines.push(`- ${getAnchorLabel(path, language)}`);
-        getAnchorOptions(path, language).forEach((option, index) => lines.push(`  ${index + 1}) ${option}`));
-      });
+      lines.push(clarificationRequest ? 'Вот что сейчас нужно уточнить:' : 'Сейчас нужно уточнить:');
+      lines.push(`- ${getAnchorClarification(activeAnchor, language)}`);
       lines.push('');
-      lines.push('Нужен один содержательный выбор по текущим пунктам, и loop пойдёт дальше.');
+      lines.push('Варианты:');
+      getAnchorOptions(activeAnchor, language).forEach((option, index) => lines.push(`${index + 1}. ${option}`));
+      lines.push('');
+      lines.push('Выбери один вариант или сформулируй свой.');
     }
   }
   return lines.join('\n').trim();
 }
-
 
 function hasCommercialGoalContext(blueprint) {
   const videoType = String(blueprint?.meta?.video_type || '').trim().toLowerCase();

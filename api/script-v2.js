@@ -39,6 +39,396 @@ function normalizeStage(stage) {
   return value || "start";
 }
 
+function isWeakAcknowledgement(text) {
+  const value = String(text || "").trim().toLowerCase();
+  if (!value) return false;
+  if (/^[0-9]+$/.test(value)) return false;
+  return ["ok", "okay", "ок", "да", "yes", "ага", "норм", "good", "fine", "далее", "дальше", "go", "build"].includes(value);
+}
+
+function getByPathLocal(obj, path) {
+  return String(path || "").split('.').filter(Boolean).reduce((acc, key) => (acc == null ? undefined : acc[key]), obj);
+}
+
+function mergePatchIntoBlueprint(blueprint, patch = {}) {
+  const next = JSON.parse(JSON.stringify(blueprint || {}));
+  Object.entries(patch || {}).forEach(([path, value]) => {
+    const keys = String(path || '').split('.').filter(Boolean);
+    if (!keys.length) return;
+    let cursor = next;
+    for (let i = 0; i < keys.length - 1; i += 1) {
+      const key = keys[i];
+      if (!cursor[key] || typeof cursor[key] !== 'object') cursor[key] = {};
+      cursor = cursor[key];
+    }
+    cursor[keys[keys.length - 1]] = value;
+  });
+  return next;
+}
+
+function getPriorityAnchors(blueprint, patch = {}, userMessage = "", maxAnchors = 2) {
+  const next = mergePatchIntoBlueprint(blueprint, patch);
+  const weakAck = isWeakAcknowledgement(userMessage);
+  const stored = Array.isArray(next?.system_state?.refinement_focus_anchors)
+    ? next.system_state.refinement_focus_anchors.filter((path) => {
+        const value = getByPathLocal(next, path);
+        return !(typeof value === 'string' ? value.trim() : value);
+      })
+    : [];
+  if (weakAck && stored.length) return stored.slice(0, maxAnchors);
+
+  const critical = getCriticalAlignmentMissingFromState(next, {});
+  if (critical.length) return critical.slice(0, maxAnchors);
+
+  const secondary = [
+    'narrative.scene_development',
+    'scene_core.core_event',
+    'scene_core.main_focus',
+    'environment.location',
+    'participants.main_character',
+    'visual_direction.visual_style'
+  ].filter((path) => {
+    const value = getByPathLocal(next, path);
+    return !(typeof value === 'string' ? value.trim() : value);
+  });
+  if (secondary.length) return secondary.slice(0, maxAnchors);
+
+  return [];
+}
+
+function getAnchorOptions(path, language = 'ru') {
+  const ru = {
+    'goal.video_goal': ['показать пользу продукта', 'вызвать интерес и желание попробовать', 'подтолкнуть к конкретному действию'],
+    'goal.audience': ['маркетологи и performance-команды', 'контент-команды и copy/creative', 'малый бизнес / founders'],
+    'marketing_layer.message': ['экономия времени', 'повышение качества и ясности', 'быстрое превращение идеи в структуру'],
+    'marketing_layer.product_focus': ['AI-генерация сценария', 'структурирование и сборка идеи', 'ускорение командной работы'],
+    'marketing_layer.cta': ['попробовать сейчас', 'ускорить производство контента', 'собрать рабочую структуру быстрее'],
+    'narrative.scene_development': ['усилить движение и escalation', 'сделать раскрытие мягче', 'добавить более чёткий payoff'],
+    'scene_core.core_event': ['момент reveal', 'момент выбора', 'момент трансформации'],
+    'scene_core.main_focus': ['герой и действие', 'продукт и польза', 'атмосфера и визуальный образ'],
+    'environment.location': ['цифровое пространство', 'офис / студия / workspace', 'абстрактный cinematic environment'],
+    'participants.main_character': ['основатель / эксперт', 'креатор / маркетолог', 'абстрактный герой / оператор системы'],
+    'visual_direction.visual_style': ['cinematic premium', 'clean minimal', 'dynamic commercial']
+  };
+  const en = {
+    'goal.video_goal': ['show the product benefit', 'create interest and desire to try it', 'drive a concrete action'],
+    'goal.audience': ['marketers and performance teams', 'content teams and copy/creative', 'small business / founders'],
+    'marketing_layer.message': ['save time', 'improve quality and clarity', 'turn ideas into structure faster'],
+    'marketing_layer.product_focus': ['AI script generation', 'idea structuring and assembly', 'faster team workflow'],
+    'marketing_layer.cta': ['try it now', 'speed up content production', 'build a working structure faster'],
+    'narrative.scene_development': ['stronger movement and escalation', 'softer reveal', 'clearer payoff'],
+    'scene_core.core_event': ['a reveal moment', 'a choice moment', 'a transformation moment'],
+    'scene_core.main_focus': ['hero and action', 'product and benefit', 'atmosphere and visual image'],
+    'environment.location': ['digital space', 'office / studio / workspace', 'abstract cinematic environment'],
+    'participants.main_character': ['founder / expert', 'creator / marketer', 'abstract hero / system operator'],
+    'visual_direction.visual_style': ['cinematic premium', 'clean minimal', 'dynamic commercial']
+  };
+  return ((language === 'en' ? en : ru)[path] || []).slice(0, 3);
+}
+
+function getGenericAnchorFallbackOptions(path, language = 'ru') {
+  const map = language === 'en'
+    ? {
+        goal: ['focus on clarity', 'focus on benefit', 'focus on action'],
+        audience: ['specialists', 'teams', 'small business'],
+        message: ['clarity', 'value', 'speed'],
+        focus: ['hero', 'product', 'atmosphere'],
+        event: ['reveal', 'choice', 'transformation'],
+        development: ['more movement', 'softer reveal', 'clear payoff'],
+        location: ['digital space', 'workspace', 'abstract environment'],
+        character: ['expert', 'creator', 'abstract protagonist'],
+        style: ['cinematic', 'clean', 'dynamic']
+      }
+    : {
+        goal: ['сделать смысл яснее', 'усилить пользу', 'подвести к действию'],
+        audience: ['специалисты', 'команды', 'малый бизнес'],
+        message: ['ясность', 'ценность', 'скорость'],
+        focus: ['герой', 'продукт', 'атмосфера'],
+        event: ['reveal', 'выбор', 'трансформация'],
+        development: ['больше движения', 'мягче раскрытие', 'чёткий payoff'],
+        location: ['цифровое пространство', 'workspace', 'абстрактная среда'],
+        character: ['эксперт', 'креатор', 'абстрактный герой'],
+        style: ['cinematic', 'clean', 'dynamic']
+      };
+
+  if (/audience/i.test(path)) return map.audience.slice(0, 3);
+  if (/message/i.test(path)) return map.message.slice(0, 3);
+  if (/video_goal|goal/i.test(path)) return map.goal.slice(0, 3);
+  if (/product_focus|main_focus|focus/i.test(path)) return map.focus.slice(0, 3);
+  if (/core_event|event/i.test(path)) return map.event.slice(0, 3);
+  if (/scene_development|development/i.test(path)) return map.development.slice(0, 3);
+  if (/location/i.test(path)) return map.location.slice(0, 3);
+  if (/main_character|character/i.test(path)) return map.character.slice(0, 3);
+  if (/visual_style|style/i.test(path)) return map.style.slice(0, 3);
+  return language === 'en'
+    ? ['make it clearer', 'make it stronger', 'make it more actionable']
+    : ['сделать яснее', 'сделать сильнее', 'сделать практичнее'];
+}
+
+function getSafeAnchorOptions(path, language = 'ru') {
+  const direct = getAnchorOptions(path, language).filter(Boolean).slice(0, 3);
+  if (direct.length >= 2) return direct;
+  return getGenericAnchorFallbackOptions(path, language).filter(Boolean).slice(0, 3);
+}
+
+function getAnchorLabel(path, language = 'ru') {
+  const ru = {
+    'goal.video_goal': 'цель ролика',
+    'goal.audience': 'аудитория',
+    'marketing_layer.message': 'основной посыл',
+    'marketing_layer.product_focus': 'продуктовый акцент',
+    'marketing_layer.cta': 'CTA',
+    'narrative.scene_development': 'развитие сцены',
+    'scene_core.core_event': 'ключевое событие',
+    'scene_core.main_focus': 'главный фокус',
+    'environment.location': 'локация',
+    'participants.main_character': 'главный герой/субъект',
+    'visual_direction.visual_style': 'визуальный стиль'
+  };
+  const en = {
+    'goal.video_goal': 'video goal',
+    'goal.audience': 'audience',
+    'marketing_layer.message': 'core message',
+    'marketing_layer.product_focus': 'product focus',
+    'marketing_layer.cta': 'CTA',
+    'narrative.scene_development': 'scene development',
+    'scene_core.core_event': 'core event',
+    'scene_core.main_focus': 'main focus',
+    'environment.location': 'location',
+    'participants.main_character': 'main character / subject',
+    'visual_direction.visual_style': 'visual style'
+  };
+  return (language === 'en' ? en[path] : ru[path]) || path;
+}
+
+function getAnchorClarification(path, language = 'ru') {
+  const ru = {
+    'goal.video_goal': 'какую главную цель должен выполнить ролик',
+    'goal.audience': 'для кого этот ролик в первую очередь',
+    'marketing_layer.message': 'какая основная мысль должна остаться у зрителя',
+    'marketing_layer.product_focus': 'на каком преимуществе продукта делаем акцент',
+    'marketing_layer.cta': 'к какому действию подводим зрителя',
+    'narrative.scene_development': 'как дальше развивается сцена после начального кадра',
+    'scene_core.core_event': 'какое главное событие должно произойти в сцене',
+    'scene_core.main_focus': 'на чём должен быть главный фокус внимания',
+    'participants.main_character': 'кто главный участник сцены',
+    'environment.location': 'в каком пространстве это происходит',
+    'visual_direction.visual_style': 'какой визуальный стиль должен вести сцену'
+  };
+  const en = {
+    'goal.video_goal': 'what main goal the video should accomplish',
+    'goal.audience': 'who this video is primarily for',
+    'marketing_layer.message': 'what main message should stay with the viewer',
+    'marketing_layer.product_focus': 'what product advantage should carry the focus',
+    'marketing_layer.cta': 'what action we want the viewer to take',
+    'narrative.scene_development': 'how the scene develops after the opening frame',
+    'scene_core.core_event': 'what main event should happen in the scene',
+    'scene_core.main_focus': 'what should hold the main focus of attention',
+    'participants.main_character': 'who the main participant of the scene is',
+    'environment.location': 'what space this takes place in',
+    'visual_direction.visual_style': 'what visual style should drive the scene'
+  };
+  return (language === 'en' ? en[path] : ru[path]) || getAnchorLabel(path, language);
+}
+
+
+function getActiveAnchorPath(blueprint, patch = {}, userMessage = '') {
+  const merged = ensureRefinementBlueprintIntegrity(mergePatchIntoBlueprint(blueprint, patch));
+  const stored = Array.isArray(merged?.system_state?.refinement_focus_anchors)
+    ? merged.system_state.refinement_focus_anchors.filter(Boolean)
+    : [];
+  const unresolvedStored = stored.filter((path) => {
+    const value = getByPathLocal(merged, path);
+    return !(typeof value === 'string' ? value.trim() : value);
+  });
+  if (unresolvedStored.length) return unresolvedStored[0];
+  const priority = getPriorityAnchors(merged, {}, userMessage, 1);
+  return priority[0] || null;
+}
+
+function normalizeRefinementInputText(text) {
+  return String(text || '').trim().replace(/\s+/g, ' ');
+}
+
+function parseSelectedOptionIndexes(userMessage, maxOptions = 3) {
+  const text = normalizeRefinementInputText(userMessage).toLowerCase();
+  if (!text) return [];
+  const matches = text.match(/\d+/g) || [];
+  const indexes = [];
+  matches.forEach((token) => {
+    const value = Number(token);
+    if (Number.isInteger(value) && value >= 1 && value <= maxOptions && !indexes.includes(value)) {
+      indexes.push(value);
+    }
+  });
+  return indexes;
+}
+
+function combineAnchorOptionValues(values, language = 'ru') {
+  const items = (values || []).map((value) => String(value || '').trim()).filter(Boolean);
+  if (!items.length) return '';
+  if (items.length === 1) return items[0];
+  return items.join(' + ');
+}
+
+function buildAnchorPatchValue(anchorPath, userMessage, language = 'ru') {
+  const options = getSafeAnchorOptions(anchorPath, language);
+  const selectedIndexes = parseSelectedOptionIndexes(userMessage, options.length || 3);
+  if (selectedIndexes.length) {
+    const selectedValues = selectedIndexes
+      .map((index) => options[index - 1])
+      .filter(Boolean);
+    if (selectedValues.length) return combineAnchorOptionValues(selectedValues, language);
+  }
+
+  const raw = normalizeRefinementInputText(userMessage);
+  if (!raw || isWeakAcknowledgement(raw)) return '';
+  return raw;
+}
+
+function buildDeterministicRefinementPatch(blueprint, userMessage, language = 'ru') {
+  const activeAnchor = getActiveAnchorPath(blueprint, {}, userMessage);
+  if (!activeAnchor) return {};
+  const value = buildAnchorPatchValue(activeAnchor, userMessage, language);
+  if (!value) return {};
+  return { [activeAnchor]: value };
+}
+
+function ensureRefinementBlueprintIntegrity(blueprint) {
+  const next = mergePatchIntoBlueprint(blueprint || {}, {});
+  const seedScene = String(getByPathLocal(next, 'scene_core.seed_scene') || '').trim();
+  const lockedSeed = String(getByPathLocal(next, 'system_state.last_locked_seed_scene') || '').trim();
+  const setupSeed = String(getByPathLocal(next, 'narrative.scene_setup') || '').trim();
+  const recoveredSeed = seedScene || lockedSeed || setupSeed;
+
+  if (recoveredSeed && !seedScene) {
+    next.scene_core = next.scene_core || {};
+    next.scene_core.seed_scene = recoveredSeed;
+  }
+  if (recoveredSeed && !lockedSeed) {
+    next.system_state = next.system_state || {};
+    next.system_state.last_locked_seed_scene = recoveredSeed;
+  }
+  if (recoveredSeed && !setupSeed) {
+    next.narrative = next.narrative || {};
+    next.narrative.scene_setup = recoveredSeed;
+  }
+  return next;
+}
+
+function isClarificationRequest(text) {
+  const value = String(text || '').trim().toLowerCase();
+  if (!value) return false;
+  return [
+    /что\s+мне\s+нужно\s+уточнить/i,
+    /что\s+уточнить/i,
+    /что\s+выбрать/i,
+    /не\s+понял/i,
+    /не\s+поняла/i,
+    /что\s+ты\s+имеешь\s+в\s+виду/i,
+    /what\s+do\s+i\s+need\s+to\s+clarify/i,
+    /what\s+should\s+i\s+choose/i,
+    /i\s+do\s+not\s+understand/i,
+    /what\s+do\s+you\s+mean/i
+  ].some((re) => re.test(value));
+}
+
+function buildLoopMessage(blueprint, patch = {}, userMessage = '', language = 'ru') {
+  const merged = ensureRefinementBlueprintIntegrity(mergePatchIntoBlueprint(blueprint, patch));
+  const priority = getPriorityAnchors(merged, {}, userMessage, 2);
+  const activeAnchor = priority[0] || null;
+  const seedScene = String(merged?.scene_core?.seed_scene || '').trim();
+  const concept = String(merged?.scene_core?.concept_line || merged?.scene_core?.main_focus || '').trim();
+  const clarificationRequest = isClarificationRequest(userMessage);
+  const lines = [];
+  if (language === 'en') {
+    lines.push('Locked so far:');
+    if (seedScene) lines.push(`- base scene: ${seedScene}`);
+    if (concept) lines.push(`- direction: ${concept}`);
+    if (!seedScene && !concept) lines.push('- the base scene is fixed and the refinement loop is narrowing the direction.');
+    if (activeAnchor) {
+      lines.push('');
+      lines.push(clarificationRequest ? 'Here is what needs clarification right now:' : 'Right now we need to clarify:');
+      lines.push(`- ${getAnchorClarification(activeAnchor, language)}`);
+      lines.push('');
+      lines.push('Options:');
+      getSafeAnchorOptions(activeAnchor, language).forEach((option, index) => lines.push(`${index + 1}. ${option}`));
+      lines.push('');
+      lines.push('Choose one option or phrase your own version.');
+    }
+  } else {
+    lines.push('Уже зафиксировано:');
+    if (seedScene) lines.push(`- базовая сцена: ${seedScene}`);
+    if (concept) lines.push(`- вектор: ${concept}`);
+    if (!seedScene && !concept) lines.push('- базовая сцена уже удерживается, и refinement сейчас сужает нужный вектор.');
+    if (activeAnchor) {
+      lines.push('');
+      lines.push(clarificationRequest ? 'Вот что сейчас нужно уточнить:' : 'Сейчас нужно уточнить:');
+      lines.push(`- ${getAnchorClarification(activeAnchor, language)}`);
+      lines.push('');
+      lines.push('Варианты:');
+      getSafeAnchorOptions(activeAnchor, language).forEach((option, index) => lines.push(`${index + 1}. ${option}`));
+      lines.push('');
+      lines.push('Выбери один вариант или сформулируй свой.');
+    }
+  }
+  return lines.join('\n').trim();
+}
+
+function hasCommercialGoalContext(blueprint) {
+  const videoType = String(blueprint?.meta?.video_type || '').trim().toLowerCase();
+  if (videoType === 'promo') return true;
+  const goal = String(blueprint?.goal?.video_goal || '').trim().toLowerCase();
+  return ['product', 'service', 'brand', 'promotion', 'promo', 'ad', 'presentation', 'pitch', 'commercial'].some((token) => goal.includes(token));
+}
+
+function getCriticalAlignmentMissingFromState(blueprint, patch = {}) {
+  if (!hasCommercialGoalContext(blueprint)) return [];
+  const merged = mergePatchIntoBlueprint(blueprint, patch);
+  const candidates = [
+    'goal.video_goal',
+    'goal.audience',
+    'marketing_layer.message',
+    'marketing_layer.product_focus',
+    'marketing_layer.cta'
+  ];
+  return candidates.filter((path) => {
+    const finalValue = getByPathLocal(merged, path);
+    if (Array.isArray(finalValue)) return finalValue.length === 0;
+    return !(typeof finalValue === 'string' ? finalValue.trim() : finalValue);
+  });
+}
+
+function getContextTextForBias(blueprint) {
+  return [
+    blueprint?.goal?.user_request_summary,
+    blueprint?.system_state?.last_user_message,
+    blueprint?.scene_core?.seed_scene,
+    blueprint?.scene_core?.main_focus,
+    blueprint?.marketing_layer?.message,
+    blueprint?.marketing_layer?.product_focus,
+  ].map((value) => String(value || '').trim()).filter(Boolean).join('\n').toLowerCase();
+}
+
+function sanitizeRefinementPatch(patch, blueprint) {
+  const next = patch && typeof patch === 'object' ? { ...patch } : {};
+  const contextText = getContextTextForBias(blueprint);
+  const allowLiviContext = /\blivi\b|scriptwriter/.test(contextText);
+  if (!allowLiviContext) {
+    ['goal.user_request_summary', 'scene_core.main_focus', 'marketing_layer.message', 'marketing_layer.product_focus'].forEach((path) => {
+      const value = String(next[path] || '').trim();
+      if (value && /\blivi\b|scriptwriter/i.test(value)) delete next[path];
+    });
+  }
+  if (hasCommercialGoalContext(blueprint)) {
+    ['goal.video_goal', 'goal.audience', 'marketing_layer.message', 'marketing_layer.product_focus', 'marketing_layer.cta'].forEach((path) => {
+      if (Object.prototype.hasOwnProperty.call(next, path)) delete next[path];
+    });
+  }
+  return next;
+}
+
+
 function buildRolePrompt(role, language = "ru") {
   const langRu = language !== "en";
 
@@ -818,21 +1208,49 @@ async function callOpenAI(input) {
   return { raw, parsed: JSON.parse(raw) };
 }
 
-function normalizeRefinementResult(parsed, currentStage) {
+function normalizeRefinementResult(parsed, currentStage, blueprint, userMessage = "") {
   const data = parsed && typeof parsed === "object" ? { ...parsed } : {};
+  blueprint = ensureRefinementBlueprintIntegrity(blueprint);
   const stage = normalizeStage(currentStage);
+  const language = blueprint?.meta?.language || 'ru';
+  const deterministicPatch = buildDeterministicRefinementPatch(blueprint, userMessage, language);
+  data.patch = {
+    ...(sanitizeRefinementPatch(data.patch, blueprint) || {}),
+    ...deterministicPatch
+  };
   const normalizedStage = String(data.response_stage || "").trim().toLowerCase();
+  const weakAck = isWeakAcknowledgement(userMessage);
 
   if (stage === "development") {
     data.response_stage = normalizedStage || "development";
     data.ready_hint = false;
+    data.patch = { ...(data.patch || {}), "system_state.refinement_focus_anchors": getPriorityAnchors(blueprint, data.patch || {}, userMessage, 1) };
+    if (!String(data.message || '').trim()) data.message = buildLoopMessage(blueprint, data.patch, userMessage, blueprint?.meta?.language || 'ru');
     return data;
   }
 
-  if (data.ready_hint === true) {
+  const criticalMissing = getCriticalAlignmentMissingFromState(blueprint, data.patch || {});
+  const priorityAnchors = getPriorityAnchors(blueprint, data.patch || {}, userMessage, 1);
+  if (weakAck) {
+    ["goal.video_goal", "goal.audience", "marketing_layer.message", "marketing_layer.product_focus", "marketing_layer.cta"].forEach((path) => {
+      delete data.patch?.[path];
+    });
+  }
+  data.patch = { ...(data.patch || {}), "system_state.refinement_focus_anchors": priorityAnchors };
+
+  if (criticalMissing.length || priorityAnchors.length || weakAck) {
+    data.ready_hint = false;
+    data.response_stage = "refinement";
+    data.questions = [];
+    data.message = buildLoopMessage(blueprint, data.patch, userMessage, blueprint?.meta?.language || 'ru');
+  } else if (data.ready_hint === true && !criticalMissing.length && !priorityAnchors.length) {
     data.response_stage = "alignment";
   } else {
     data.response_stage = normalizedStage || "refinement";
+    if (data.response_stage === 'refinement') {
+      data.message = buildLoopMessage(blueprint, data.patch, userMessage, blueprint?.meta?.language || 'ru');
+      data.questions = [];
+    }
   }
 
   return data;
@@ -865,6 +1283,9 @@ function buildServerTrace({ blueprint, action, parsed, normalizedParsed }) {
   const data = normalizedParsed || parsed || {};
   const patch = data && typeof data.patch === "object" ? data.patch : {};
   const patchedFields = diffPatchPaths(patch);
+  const merged = mergePatchIntoBlueprint(blueprint || {}, patch || {});
+  const criticalAlignmentMissing = getCriticalAlignmentMissingFromState(blueprint || {}, patch || {});
+  const minimumUsableMissing = Array.isArray(merged?.system_state?.minimum_usable_missing) ? merged.system_state.minimum_usable_missing : [];
   return {
     current_stage_before: currentStage,
     requested_action: action,
@@ -872,6 +1293,8 @@ function buildServerTrace({ blueprint, action, parsed, normalizedParsed }) {
     ready_hint: !!data?.ready_hint,
     patched_fields: patchedFields,
     patched_field_sources: detectPatchSources(blueprint, patch),
+    critical_alignment_missing: criticalAlignmentMissing,
+    minimum_usable_missing: minimumUsableMissing,
     message_present: typeof data?.message === "string" && data.message.trim().length > 0,
     questions_count: Array.isArray(data?.questions) ? data.questions.length : 0,
   };
@@ -889,7 +1312,9 @@ module.exports = async (req, res) => {
     const body = safeParseBody(req);
     const payload = body.payload || {};
     const action = normalizeAction(body.action);
-    const blueprint = body.blueprint || payload.blueprint || {};
+    const blueprint = action === "REFINEMENT"
+      ? ensureRefinementBlueprintIntegrity(body.blueprint || payload.blueprint || {})
+      : (body.blueprint || payload.blueprint || {});
     const uiInputs = body.uiInputs || payload.uiInputs || {};
     const resultSchema = body.resultSchema || payload.resultSchema || {};
     const userMessage = typeof body.userMessage === "string"
@@ -910,7 +1335,7 @@ module.exports = async (req, res) => {
         return json(res, 400, { error: "Missing userMessage for REFINEMENT" });
       }
       if (!blueprint?.scene_core?.seed_scene || !String(blueprint.scene_core.seed_scene).trim()) {
-        return json(res, 400, { error: "Missing scene_core.seed_scene for REFINEMENT" });
+        return json(res, 400, { error: "Missing scene_core.seed_scene for REFINEMENT", recovered: false });
       }
       input = buildRefinementInput({ blueprint, userMessage, language });
     } else if (action === "FINAL_ASSEMBLY") {
@@ -934,7 +1359,7 @@ module.exports = async (req, res) => {
 
     const { parsed, raw } = await callOpenAI(input);
     let normalizedParsed = action === "REFINEMENT"
-      ? normalizeRefinementResult(parsed, blueprint?.system_state?.current_stage)
+      ? normalizeRefinementResult(parsed, blueprint?.system_state?.current_stage, blueprint, userMessage)
       : (action === "POST_CHAT"
           ? normalizePostChatResult(parsed, userMessage, body.deliverableBlocks || payload.deliverableBlocks || {}, language)
           : parsed);

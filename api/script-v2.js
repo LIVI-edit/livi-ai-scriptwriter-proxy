@@ -1,628 +1,1118 @@
 // /api/script-v2.js
-// Contract Freeze v1 — implementation
-// Corrective pass after integration audit: Patch Contract v1 fixed exactly
 
 const OPENAI_URL = "https://api.openai.com/v1/responses";
 const MODEL = process.env.OPENAI_MODEL || "gpt-4.1-mini";
 
-const STAGES = {
-  SCENE_IDEAS: "scene_ideas",
-  SELECTION: "selection",
-  REFINEMENT: "refinement",
-  ALIGNMENT: "alignment"
-};
+function json(res, code, payload) {
+  return res.status(code).json(payload);
+}
 
-const EXECUTION_SURFACES = {
-  ...STAGES,
-  BUILD: "build"
-};
+function safeParseBody(req) {
+  if (!req.body) return {};
+  if (typeof req.body === "string") {
+    try {
+      return JSON.parse(req.body);
+    } catch (_) {
+      return {};
+    }
+  }
+  return req.body;
+}
 
-const STATUSES = {
-  OK: "ok",
-  ERROR: "error",
-  BLOCKED: "blocked"
-};
+function compact(value) {
+  return JSON.stringify(value, null, 2);
+}
 
-const PATCH_POLICY = {
-  [EXECUTION_SURFACES.SCENE_IDEAS]: false,
-  [EXECUTION_SURFACES.SELECTION]: true,
-  [EXECUTION_SURFACES.REFINEMENT]: true,
-  [EXECUTION_SURFACES.ALIGNMENT]: false,
-  [EXECUTION_SURFACES.BUILD]: false
-};
+function normalizeAction(action) {
+  return String(action || "").trim().toUpperCase();
+}
 
-const FORBIDDEN_ROUTE_KEYS = new Set([
-  "next_stage",
-  "go_to_alignment",
-  "go_to_build",
-  "ask_more_questions",
-  "route_decision",
-  "route",
-  "advance",
-  "advance_to_alignment",
-  "advance_to_build",
-  "ready_hint",
-  "response_stage"
-]);
+function getQuestionLimit(planTier) {
+  const tier = String(planTier || "free").toLowerCase();
+  if (tier === "pro") return 5;
+  if (tier === "ultra") return 8;
+  return 2;
+}
 
-// Patch Contract v1 — exact
-const SELECTION_ALLOWED_PATCH_PATHS = new Set([
-  "scene_core.seed_scene"
-]);
+function normalizeStage(stage) {
+  const value = String(stage || "").trim().toLowerCase();
+  return value || "start";
+}
 
-const REFINEMENT_ALLOWED_PATCH_PATHS = new Set([
-  "goal.video_topic",
-  "goal.video_goal",
-  "scene_core.seed_scene",
-  "narrative.scene_setup",
-  "narrative.scene_development",
-  "visual_direction.emotion"
-]);
+function isWeakAcknowledgement(text) {
+  const value = String(text || "").trim().toLowerCase();
+  if (!value) return false;
+  if (/^[0-9]+$/.test(value)) return false;
+  return ["ok", "okay", "ок", "да", "yes", "ага", "норм", "good", "fine", "далее", "дальше", "go", "build"].includes(value);
+}
 
-const ALIGNMENT_ALLOWED_PATCH_PATHS = new Set([]);
+function getByPathLocal(obj, path) {
+  return String(path || "").split('.').filter(Boolean).reduce((acc, key) => (acc == null ? undefined : acc[key]), obj);
+}
 
-const BUILD_BLOCK_CATALOG = Object.freeze([
-  "preview",
-  "video_overview",
-  "visual_emotional_direction",
-  "scene_description",
-  "story_concept",
-  "full_script",
-  "scene_breakdown",
-  "prompt",
-  "production_notes",
-  "director_notes",
-  "characters",
-  "dialogue",
-  "voice_over",
-  "camera_direction",
-  "cta_strategy",
-  "timing",
-  "branching",
-  "visual_style_extra",
-  "image_prompt_variations",
-  "video_prompt_variations"
-]);
+function mergePatchIntoBlueprint(blueprint, patch = {}) {
+  const next = JSON.parse(JSON.stringify(blueprint || {}));
+  Object.entries(patch || {}).forEach(([path, value]) => {
+    const keys = String(path || '').split('.').filter(Boolean);
+    if (!keys.length) return;
+    let cursor = next;
+    for (let i = 0; i < keys.length - 1; i += 1) {
+      const key = keys[i];
+      if (!cursor[key] || typeof cursor[key] !== 'object') cursor[key] = {};
+      cursor = cursor[key];
+    }
+    cursor[keys[keys.length - 1]] = value;
+  });
+  return next;
+}
 
-// ============================================================
-// Public API
-// ============================================================
+function getPriorityAnchors(blueprint, patch = {}, userMessage = "", maxAnchors = 2) {
+  const next = mergePatchIntoBlueprint(blueprint, patch);
+  const weakAck = isWeakAcknowledgement(userMessage);
+  const stored = Array.isArray(next?.system_state?.refinement_focus_anchors)
+    ? next.system_state.refinement_focus_anchors.filter((path) => {
+        const value = getByPathLocal(next, path);
+        return !(typeof value === 'string' ? value.trim() : value);
+      })
+    : [];
+  if (weakAck && stored.length) return stored.slice(0, maxAnchors);
 
-module.exports = handleScriptV2Request;
+  const critical = getCriticalAlignmentMissingFromState(next, {});
+  if (critical.length) return critical.slice(0, maxAnchors);
 
-// ============================================================
-// HTTP shell
-// ============================================================
+  const secondary = [
+    'narrative.scene_development',
+    'scene_core.core_event',
+    'scene_core.main_focus',
+    'environment.location',
+    'participants.main_character',
+    'visual_direction.visual_style'
+  ].filter((path) => {
+    const value = getByPathLocal(next, path);
+    return !(typeof value === 'string' ? value.trim() : value);
+  });
+  if (secondary.length) return secondary.slice(0, maxAnchors);
 
-async function handleScriptV2Request(req, res) {
-  applyCors(res);
+  return [];
+}
 
-  if (req.method === "OPTIONS") {
-    return res.status(200).end();
+function getAnchorOptions(path, language = 'ru') {
+  const ru = {
+    'goal.video_goal': ['показать пользу продукта', 'вызвать интерес и желание попробовать', 'подтолкнуть к конкретному действию'],
+    'goal.audience': ['маркетологи и performance-команды', 'контент-команды и copy/creative', 'малый бизнес / founders'],
+    'marketing_layer.message': ['экономия времени', 'повышение качества и ясности', 'быстрое превращение идеи в структуру'],
+    'marketing_layer.product_focus': ['AI-генерация сценария', 'структурирование и сборка идеи', 'ускорение командной работы'],
+    'marketing_layer.cta': ['попробовать сейчас', 'ускорить производство контента', 'собрать рабочую структуру быстрее'],
+    'narrative.scene_development': ['усилить движение и escalation', 'сделать раскрытие мягче', 'добавить более чёткий payoff'],
+    'scene_core.core_event': ['момент reveal', 'момент выбора', 'момент трансформации'],
+    'scene_core.main_focus': ['герой и действие', 'продукт и польза', 'атмосфера и визуальный образ'],
+    'environment.location': ['цифровое пространство', 'офис / студия / workspace', 'абстрактный cinematic environment'],
+    'participants.main_character': ['основатель / эксперт', 'креатор / маркетолог', 'абстрактный герой / оператор системы'],
+    'visual_direction.visual_style': ['cinematic premium', 'clean minimal', 'dynamic commercial']
+  };
+  const en = {
+    'goal.video_goal': ['show the product benefit', 'create interest and desire to try it', 'drive a concrete action'],
+    'goal.audience': ['marketers and performance teams', 'content teams and copy/creative', 'small business / founders'],
+    'marketing_layer.message': ['save time', 'improve quality and clarity', 'turn ideas into structure faster'],
+    'marketing_layer.product_focus': ['AI script generation', 'idea structuring and assembly', 'faster team workflow'],
+    'marketing_layer.cta': ['try it now', 'speed up content production', 'build a working structure faster'],
+    'narrative.scene_development': ['stronger movement and escalation', 'softer reveal', 'clearer payoff'],
+    'scene_core.core_event': ['a reveal moment', 'a choice moment', 'a transformation moment'],
+    'scene_core.main_focus': ['hero and action', 'product and benefit', 'atmosphere and visual image'],
+    'environment.location': ['digital space', 'office / studio / workspace', 'abstract cinematic environment'],
+    'participants.main_character': ['founder / expert', 'creator / marketer', 'abstract hero / system operator'],
+    'visual_direction.visual_style': ['cinematic premium', 'clean minimal', 'dynamic commercial']
+  };
+  return ((language === 'en' ? en : ru)[path] || []).slice(0, 3);
+}
+
+function getGenericAnchorFallbackOptions(path, language = 'ru') {
+  const map = language === 'en'
+    ? {
+        goal: ['focus on clarity', 'focus on benefit', 'focus on action'],
+        audience: ['specialists', 'teams', 'small business'],
+        message: ['clarity', 'value', 'speed'],
+        focus: ['hero', 'product', 'atmosphere'],
+        event: ['reveal', 'choice', 'transformation'],
+        development: ['more movement', 'softer reveal', 'clear payoff'],
+        location: ['digital space', 'workspace', 'abstract environment'],
+        character: ['expert', 'creator', 'abstract protagonist'],
+        style: ['cinematic', 'clean', 'dynamic']
+      }
+    : {
+        goal: ['сделать смысл яснее', 'усилить пользу', 'подвести к действию'],
+        audience: ['специалисты', 'команды', 'малый бизнес'],
+        message: ['ясность', 'ценность', 'скорость'],
+        focus: ['герой', 'продукт', 'атмосфера'],
+        event: ['reveal', 'выбор', 'трансформация'],
+        development: ['больше движения', 'мягче раскрытие', 'чёткий payoff'],
+        location: ['цифровое пространство', 'workspace', 'абстрактная среда'],
+        character: ['эксперт', 'креатор', 'абстрактный герой'],
+        style: ['cinematic', 'clean', 'dynamic']
+      };
+
+  if (/audience/i.test(path)) return map.audience.slice(0, 3);
+  if (/message/i.test(path)) return map.message.slice(0, 3);
+  if (/video_goal|goal/i.test(path)) return map.goal.slice(0, 3);
+  if (/product_focus|main_focus|focus/i.test(path)) return map.focus.slice(0, 3);
+  if (/core_event|event/i.test(path)) return map.event.slice(0, 3);
+  if (/scene_development|development/i.test(path)) return map.development.slice(0, 3);
+  if (/location/i.test(path)) return map.location.slice(0, 3);
+  if (/main_character|character/i.test(path)) return map.character.slice(0, 3);
+  if (/visual_style|style/i.test(path)) return map.style.slice(0, 3);
+  return language === 'en'
+    ? ['make it clearer', 'make it stronger', 'make it more actionable']
+    : ['сделать яснее', 'сделать сильнее', 'сделать практичнее'];
+}
+
+function getSafeAnchorOptions(path, language = 'ru') {
+  const direct = getAnchorOptions(path, language).filter(Boolean).slice(0, 3);
+  if (direct.length >= 2) return direct;
+  return getGenericAnchorFallbackOptions(path, language).filter(Boolean).slice(0, 3);
+}
+
+function getAnchorLabel(path, language = 'ru') {
+  const ru = {
+    'goal.video_goal': 'цель ролика',
+    'goal.audience': 'аудитория',
+    'marketing_layer.message': 'основной посыл',
+    'marketing_layer.product_focus': 'продуктовый акцент',
+    'marketing_layer.cta': 'CTA',
+    'narrative.scene_development': 'развитие сцены',
+    'scene_core.core_event': 'ключевое событие',
+    'scene_core.main_focus': 'главный фокус',
+    'environment.location': 'локация',
+    'participants.main_character': 'главный герой/субъект',
+    'visual_direction.visual_style': 'визуальный стиль'
+  };
+  const en = {
+    'goal.video_goal': 'video goal',
+    'goal.audience': 'audience',
+    'marketing_layer.message': 'core message',
+    'marketing_layer.product_focus': 'product focus',
+    'marketing_layer.cta': 'CTA',
+    'narrative.scene_development': 'scene development',
+    'scene_core.core_event': 'core event',
+    'scene_core.main_focus': 'main focus',
+    'environment.location': 'location',
+    'participants.main_character': 'main character / subject',
+    'visual_direction.visual_style': 'visual style'
+  };
+  return (language === 'en' ? en[path] : ru[path]) || path;
+}
+
+function getAnchorClarification(path, language = 'ru') {
+  const ru = {
+    'goal.video_goal': 'какую главную цель должен выполнить ролик',
+    'goal.audience': 'для кого этот ролик в первую очередь',
+    'marketing_layer.message': 'какая основная мысль должна остаться у зрителя',
+    'marketing_layer.product_focus': 'на каком преимуществе продукта делаем акцент',
+    'marketing_layer.cta': 'к какому действию подводим зрителя',
+    'narrative.scene_development': 'как дальше развивается сцена после начального кадра',
+    'scene_core.core_event': 'какое главное событие должно произойти в сцене',
+    'scene_core.main_focus': 'на чём должен быть главный фокус внимания',
+    'participants.main_character': 'кто главный участник сцены',
+    'environment.location': 'в каком пространстве это происходит',
+    'visual_direction.visual_style': 'какой визуальный стиль должен вести сцену'
+  };
+  const en = {
+    'goal.video_goal': 'what main goal the video should accomplish',
+    'goal.audience': 'who this video is primarily for',
+    'marketing_layer.message': 'what main message should stay with the viewer',
+    'marketing_layer.product_focus': 'what product advantage should carry the focus',
+    'marketing_layer.cta': 'what action we want the viewer to take',
+    'narrative.scene_development': 'how the scene develops after the opening frame',
+    'scene_core.core_event': 'what main event should happen in the scene',
+    'scene_core.main_focus': 'what should hold the main focus of attention',
+    'participants.main_character': 'who the main participant of the scene is',
+    'environment.location': 'what space this takes place in',
+    'visual_direction.visual_style': 'what visual style should drive the scene'
+  };
+  return (language === 'en' ? en[path] : ru[path]) || getAnchorLabel(path, language);
+}
+
+function ensureRefinementBlueprintIntegrity(blueprint) {
+  const next = mergePatchIntoBlueprint(blueprint || {}, {});
+  const seedScene = String(getByPathLocal(next, 'scene_core.seed_scene') || '').trim();
+  const lockedSeed = String(getByPathLocal(next, 'system_state.last_locked_seed_scene') || '').trim();
+  const setupSeed = String(getByPathLocal(next, 'narrative.scene_setup') || '').trim();
+  const recoveredSeed = seedScene || lockedSeed || setupSeed;
+
+  if (recoveredSeed && !seedScene) {
+    next.scene_core = next.scene_core || {};
+    next.scene_core.seed_scene = recoveredSeed;
+  }
+  if (recoveredSeed && !lockedSeed) {
+    next.system_state = next.system_state || {};
+    next.system_state.last_locked_seed_scene = recoveredSeed;
+  }
+  if (recoveredSeed && !setupSeed) {
+    next.narrative = next.narrative || {};
+    next.narrative.scene_setup = recoveredSeed;
+  }
+  return next;
+}
+
+function isClarificationRequest(text) {
+  const value = String(text || '').trim().toLowerCase();
+  if (!value) return false;
+  return [
+    /что\s+мне\s+нужно\s+уточнить/i,
+    /что\s+уточнить/i,
+    /что\s+выбрать/i,
+    /не\s+понял/i,
+    /не\s+поняла/i,
+    /что\s+ты\s+имеешь\s+в\s+виду/i,
+    /what\s+do\s+i\s+need\s+to\s+clarify/i,
+    /what\s+should\s+i\s+choose/i,
+    /i\s+do\s+not\s+understand/i,
+    /what\s+do\s+you\s+mean/i
+  ].some((re) => re.test(value));
+}
+
+function buildLoopMessage(blueprint, patch = {}, userMessage = '', language = 'ru') {
+  const merged = ensureRefinementBlueprintIntegrity(mergePatchIntoBlueprint(blueprint, patch));
+  const priority = getPriorityAnchors(merged, {}, userMessage, 2);
+  const activeAnchor = priority[0] || null;
+  const seedScene = String(merged?.scene_core?.seed_scene || '').trim();
+  const concept = String(merged?.scene_core?.concept_line || merged?.scene_core?.main_focus || '').trim();
+  const clarificationRequest = isClarificationRequest(userMessage);
+  const lines = [];
+  if (language === 'en') {
+    lines.push('Locked so far:');
+    if (seedScene) lines.push(`- base scene: ${seedScene}`);
+    if (concept) lines.push(`- direction: ${concept}`);
+    if (!seedScene && !concept) lines.push('- the base scene is fixed and the refinement loop is narrowing the direction.');
+    if (activeAnchor) {
+      lines.push('');
+      lines.push(clarificationRequest ? 'Here is what needs clarification right now:' : 'Right now we need to clarify:');
+      lines.push(`- ${getAnchorClarification(activeAnchor, language)}`);
+      lines.push('');
+      lines.push('Options:');
+      getSafeAnchorOptions(activeAnchor, language).forEach((option, index) => lines.push(`${index + 1}. ${option}`));
+      lines.push('');
+      lines.push('Choose one option or phrase your own version.');
+    }
+  } else {
+    lines.push('Уже зафиксировано:');
+    if (seedScene) lines.push(`- базовая сцена: ${seedScene}`);
+    if (concept) lines.push(`- вектор: ${concept}`);
+    if (!seedScene && !concept) lines.push('- базовая сцена уже удерживается, и refinement сейчас сужает нужный вектор.');
+    if (activeAnchor) {
+      lines.push('');
+      lines.push(clarificationRequest ? 'Вот что сейчас нужно уточнить:' : 'Сейчас нужно уточнить:');
+      lines.push(`- ${getAnchorClarification(activeAnchor, language)}`);
+      lines.push('');
+      lines.push('Варианты:');
+      getSafeAnchorOptions(activeAnchor, language).forEach((option, index) => lines.push(`${index + 1}. ${option}`));
+      lines.push('');
+      lines.push('Выбери один вариант или сформулируй свой.');
+    }
+  }
+  return lines.join('\n').trim();
+}
+
+function hasCommercialGoalContext(blueprint) {
+  const videoType = String(blueprint?.meta?.video_type || '').trim().toLowerCase();
+  if (videoType === 'promo') return true;
+  const goal = String(blueprint?.goal?.video_goal || '').trim().toLowerCase();
+  return ['product', 'service', 'brand', 'promotion', 'promo', 'ad', 'presentation', 'pitch', 'commercial'].some((token) => goal.includes(token));
+}
+
+function getCriticalAlignmentMissingFromState(blueprint, patch = {}) {
+  if (!hasCommercialGoalContext(blueprint)) return [];
+  const merged = mergePatchIntoBlueprint(blueprint, patch);
+  const candidates = [
+    'goal.video_goal',
+    'goal.audience',
+    'marketing_layer.message',
+    'marketing_layer.product_focus',
+    'marketing_layer.cta'
+  ];
+  return candidates.filter((path) => {
+    const finalValue = getByPathLocal(merged, path);
+    if (Array.isArray(finalValue)) return finalValue.length === 0;
+    return !(typeof finalValue === 'string' ? finalValue.trim() : finalValue);
+  });
+}
+
+function getContextTextForBias(blueprint) {
+  return [
+    blueprint?.goal?.user_request_summary,
+    blueprint?.system_state?.last_user_message,
+    blueprint?.scene_core?.seed_scene,
+    blueprint?.scene_core?.main_focus,
+    blueprint?.marketing_layer?.message,
+    blueprint?.marketing_layer?.product_focus,
+  ].map((value) => String(value || '').trim()).filter(Boolean).join('\n').toLowerCase();
+}
+
+function sanitizeRefinementPatch(patch, blueprint) {
+  const next = patch && typeof patch === 'object' ? { ...patch } : {};
+  const contextText = getContextTextForBias(blueprint);
+  const allowLiviContext = /\blivi\b|scriptwriter/.test(contextText);
+  if (!allowLiviContext) {
+    ['goal.user_request_summary', 'scene_core.main_focus', 'marketing_layer.message', 'marketing_layer.product_focus'].forEach((path) => {
+      const value = String(next[path] || '').trim();
+      if (value && /\blivi\b|scriptwriter/i.test(value)) delete next[path];
+    });
+  }
+  if (hasCommercialGoalContext(blueprint)) {
+    ['goal.video_goal', 'goal.audience', 'marketing_layer.message', 'marketing_layer.product_focus', 'marketing_layer.cta'].forEach((path) => {
+      if (Object.prototype.hasOwnProperty.call(next, path)) delete next[path];
+    });
+  }
+  return next;
+}
+
+
+function buildRolePrompt(role, language = "ru") {
+  const langRu = language !== "en";
+
+  const roles = {
+    nika: langRu
+      ? "Ты Nika, Creative Director LiVi. Думаешь концептом, образом, цельностью сцены. Усиливай оригинальность, creative unity и сильный образ."
+      : "You are Nika, LiVi Creative Director. Think in concepts, scene unity, fresh framing, and strong image.",
+    max: langRu
+      ? "Ты Max, Commercial Strategist LiVi. Думаешь message, audience, value, CTA и conversion mindset."
+      : "You are Max, LiVi Commercial Strategist. Think in message, audience, value, CTA, and conversion mindset.",
+    sara: langRu
+      ? "Ты Sara, Cinematographer LiVi. Твой приоритет: light → optics → composition → visual reveal → mood. Строй сцену через визуальный язык, свет и способ раскрытия кадра."
+      : "You are Sara, LiVi Cinematographer. Your priority is light → optics → composition → visual reveal → mood. Build the scene through visual language, light and the way the frame reveals itself.",
+    zhora: langRu
+      ? "Ты Zhora, Film Director LiVi. Твой приоритет: action → movement → staging → progression → payoff. Строй сцену через действие героя, мизансцену и развитие события."
+      : "You are Zhora, LiVi Film Director. Your priority is action → movement → staging → progression → payoff. Build the scene through character action, staging and event progression."
+  };
+
+  return roles[String(role || "").toLowerCase()] || roles.nika;
+}
+
+function buildRoleBiasNotes(role, language = "ru") {
+  const langRu = language !== "en";
+  const notes = {
+    nika: langRu
+      ? "Role bias: можно сохранить тот же сценический вектор, если user constraints совпадают, но внутри сцены делай акцент на образе, метафоре, символе и creative hook."
+      : "Role bias: the same scene vector may remain if user constraints match, but the internal emphasis must be image, metaphor, symbol and creative hook.",
+    max: langRu
+      ? "Role bias: можно сохранить тот же scene vector, но подай его через audience angle, benefit framing, value clarity, message и product relevance. Не уходи в просто красивую product scene без понятной пользы."
+      : "Role bias: the same scene vector may remain, but frame it through audience angle, benefit framing, value clarity, message and product relevance. Do not drift into a merely pretty product scene without clear usefulness.",
+    sara: langRu
+      ? "Role bias: можно сохранить тот же scene vector, но строй его через свет, глубину кадра, композицию, reveal и visual language."
+      : "Role bias: the same scene vector may remain, but build it through light, frame depth, composition, reveal and visual language.",
+    zhora: langRu
+      ? "Role bias: можно сохранить тот же scene vector, но строй его через действие, blocking, progression и развитие события."
+      : "Role bias: the same scene vector may remain, but build it through action, blocking, progression and event development."
+  };
+  return notes[String(role || "").toLowerCase()] || notes.nika;
+}
+
+function buildSceneIdeasInput({ blueprint, uiInputs, language }) {
+  const langRu = language !== "en";
+
+  const instruction = langRu
+    ? `
+Сгенерируй 3 идеи сцены на основе входных данных пользователя.
+
+Задача:
+- НЕ писать длинный сценарий.
+- НЕ собирать финальный результат.
+- НЕ повторять уже известные UI inputs как вопросы.
+- Использовать known inputs как уже заданные.
+- Не подставлять по умолчанию, что видео про LiVi, AI Scriptwriter, сам продукт или саму платформу, если это не следует прямо из входных данных пользователя.
+- Вернуть только 3 варианта сцены:
+  1) exact
+  2) variation
+  3) creative
+
+Требования:
+- Каждая идея: short_title, scene_text, why_it_works.
+- Сцены должны различаться по углу подачи.
+- Ответ верни ТОЛЬКО как JSON.
+- Без markdown.
+- Без пояснений до и после JSON.
+
+Формат JSON:
+{
+  "ideas": [
+    { "id": "exact", "short_title": "...", "scene_text": "...", "why_it_works": "..." },
+    { "id": "variation", "short_title": "...", "scene_text": "...", "why_it_works": "..." },
+    { "id": "creative", "short_title": "...", "scene_text": "...", "why_it_works": "..." }
+  ]
+}
+`.trim()
+    : `
+Generate 3 scene ideas based on the user's provided inputs.
+
+Task:
+- Do NOT write a full script.
+- Do NOT assemble the final deliverable.
+- Do NOT ask again about known UI inputs.
+- Treat known inputs as already fixed.
+- Do not assume by default that the video is about LiVi, the AI Scriptwriter, the product itself, or the platform unless that is explicitly present in the user's inputs.
+- Return only 3 scene options:
+  1) exact
+  2) variation
+  3) creative
+
+Requirements:
+- Each idea: short_title, scene_text, why_it_works.
+- The three ideas must differ in angle.
+- Role bias must change decision priority, interpretation and scene emphasis, not just wording.
+- If user constraints are the same, the broad scene vector may still overlap, but the role-specific reasoning focus must be clearly different.
+- Return JSON only.
+- No markdown.
+- No extra text before or after JSON.
+
+JSON format:
+{
+  "ideas": [
+    { "id": "exact", "short_title": "...", "scene_text": "...", "why_it_works": "..." },
+    { "id": "variation", "short_title": "...", "scene_text": "...", "why_it_works": "..." },
+    { "id": "creative", "short_title": "...", "scene_text": "...", "why_it_works": "..." }
+  ]
+}
+`.trim();
+
+  return [
+    {
+      role: "system",
+      content: [
+        { type: "input_text", text: buildRolePrompt(blueprint?.meta?.scriptwriter_role, language) },
+        { type: "input_text", text: buildRoleBiasNotes(blueprint?.meta?.scriptwriter_role, language) },
+        { type: "input_text", text: instruction }
+      ]
+    },
+    {
+      role: "user",
+      content: [
+        {
+          type: "input_text",
+          text: `UI inputs:\n${compact(uiInputs || {})}\n\nBlueprint:\n${compact(blueprint || {})}`
+        }
+      ]
+    }
+  ];
+}
+
+function buildRefinementInstruction(stage, questionLimit, language) {
+  const langRu = language !== "en";
+
+  if (stage === "development") {
+    return langRu
+      ? `
+Ты работаешь на этапе DEVELOPMENT.
+
+Задача:
+- Принять уже выбранную сцену как зафиксированную основу.
+- Дать одно короткое человеческое развитие сцены.
+- Не открывать новые 3 сцены.
+- Не давать локальный фейковый финал.
+- Мягко повести пользователя к следующему обязательному шагу.
+- При необходимости задай максимум 1 короткий уточняющий вопрос.
+
+Верни ТОЛЬКО JSON:
+{
+  "patch": {
+    "scene_core.concept_line": "...",
+    "narrative.scene_development": "..."
+  },
+  "questions": ["..."],
+  "message": "...",
+  "ready_hint": false
+}
+
+Правила:
+- message обязателен.
+- message должен быть коротким живым development-ответом.
+- Не обещай final assembly.
+- Не делай Alignment на этом шаге.
+- patch содержит только реально уточнённые поля.
+- Без markdown.
+- Без пояснений.
+`.trim()
+      : `
+You are in the DEVELOPMENT stage.
+
+Task:
+- Treat the selected scene as the locked foundation.
+- Give one short human development step for the scene.
+- Do not open 3 new scene ideas.
+- Do not output a fake local final.
+- Softly guide the user to the next required step.
+- If needed, ask at most 1 short clarifying question.
+
+Return JSON only:
+{
+  "patch": {
+    "scene_core.concept_line": "...",
+    "narrative.scene_development": "..."
+  },
+  "questions": ["..."],
+  "message": "...",
+  "response_stage": "development",
+  "ready_hint": false
+}
+
+Rules:
+- message is required.
+- response_stage must be "development".
+- message must be a short, human development reply.
+- Do not promise final assembly here.
+- Do not perform Alignment at this step.
+- patch contains only truly refined fields.
+- No markdown.
+- No explanations.
+`.trim();
   }
 
-  if (req.method !== "POST") {
-    return sendJson(res, 405, buildErrorEnvelope({
-      stage: null,
-      code: "METHOD_NOT_ALLOWED",
-      message: "Method not allowed"
-    }));
-  }
+  return langRu
+    ? `
+Ты работаешь на этапе REFINEMENT.
 
-  try {
-    const body = safeParseBody(req.body);
-    const surfaceRequest = buildSurfaceRequest(body);
-    const result = await executeSurface(surfaceRequest);
+Задача:
+- Посмотреть текущий Scene Blueprint.
+- Обновить сцену только там, где это логично.
+- Не пересоздавать Blueprint заново.
+- Не дублировать известные данные.
+- Не подставлять по умолчанию, что сцена или видео про LiVi / AI Scriptwriter / сам продукт, если это прямо не следует из Blueprint или ответа пользователя.
+- Считать scene_core.seed_scene уже зафиксированным источником истины сцены.
+- Не переписывать и не терять seed scene.
+- Обновлять Blueprint только patch-подходом.
+- Определить, каких данных реально не хватает.
+- Задать максимум ${questionLimit} коротких уточняющих вопроса, только если это действительно нужно.
+- Если данных уже достаточно, не задавай новые вопросы, а выдай Alignment как короткое человеческое подтверждение перед Build.
 
-    return sendJson(res, 200, result);
-  } catch (error) {
-    return sendJson(res, 500, buildErrorEnvelope({
-      stage: null,
-      code: "SCRIPT_V2_FAILURE",
-      message: error?.message || "script-v2 failed"
-    }));
+Верни ТОЛЬКО JSON:
+{
+  "patch": {
+    "scene_core.core_event": "...",
+    "participants.main_character": "...",
+    "environment.location": "..."
+  },
+  "questions": ["..."],
+  "message": "...",
+  "response_stage": "refinement",
+  "ready_hint": false
+}
+
+Правила:
+- patch должен содержать только новые или уточнённые поля.
+- Не включай поля, если не хочешь их менять.
+- message обязателен.
+- Если ready_hint=false, response_stage должен быть "refinement", а message должен быть refinement-ответом и не заменять Alignment.
+- Если ready_hint=true, response_stage должен быть "alignment", а message должен быть именно Alignment: коротко объясни, как система поняла задачу, какие решения зафиксированы и что теперь можно нажать Build для финальной сборки.
+- Нельзя запускать Final Assembly внутри этого этапа.
+- Не возвращай markdown.
+- Не возвращай объяснения.
+`.trim()
+    : `
+You are in the REFINEMENT stage.
+
+Task:
+- Inspect the current Scene Blueprint.
+- Update the scene only where it makes sense.
+- Do not recreate the Blueprint from scratch.
+- Do not repeat known data.
+- Do not assume by default that the scene or video is about LiVi / the AI Scriptwriter / the product itself unless that follows explicitly from the Blueprint or the user's reply.
+- Treat scene_core.seed_scene as the locked source of truth for the scene.
+- Do not overwrite or lose the seed scene.
+- Update the Blueprint only via patch logic.
+- Determine what is still truly missing.
+- Ask at most ${questionLimit} short clarifying questions only if needed.
+- If there is already enough information, ask no new questions and output Alignment as a short human confirmation before Build.
+
+Return JSON only:
+{
+  "patch": {
+    "scene_core.core_event": "...",
+    "participants.main_character": "...",
+    "environment.location": "..."
+  },
+  "questions": ["..."],
+  "message": "...",
+  "response_stage": "refinement",
+  "ready_hint": false
+}
+
+Rules:
+- patch must contain only new or refined fields.
+- Do not include fields you do not want to change.
+- message is required.
+- If ready_hint=false, response_stage must be "refinement", and message must be a refinement reply without replacing Alignment.
+- If ready_hint=true, response_stage must be "alignment", and message must be Alignment: briefly explain how the system understood the task, what decisions are locked, and that the user can now press Build for final assembly.
+- Do not launch Final Assembly inside this stage.
+- No markdown.
+- No explanations.
+`.trim();
+}
+
+function buildRefinementInput({ blueprint, userMessage, language }) {
+  const questionLimit = getQuestionLimit(blueprint?.meta?.plan_tier);
+  const currentStage = normalizeStage(blueprint?.system_state?.current_stage);
+  const instruction = buildRefinementInstruction(currentStage, questionLimit, language);
+  const langRu = language !== "en";
+
+  return [
+    {
+      role: "system",
+      content: [
+        { type: "input_text", text: buildRolePrompt(blueprint?.meta?.scriptwriter_role, language) },
+        { type: "input_text", text: buildRoleBiasNotes(blueprint?.meta?.scriptwriter_role, language) },
+        { type: "input_text", text: instruction }
+      ]
+    },
+    {
+      role: "user",
+      content: [
+        {
+          type: "input_text",
+          text: langRu
+            ? `Текущий этап: ${currentStage}\n\nТекущий Blueprint:\n${compact(blueprint || {})}\n\nПоследний ответ пользователя:\n${String(userMessage || "").trim()}`
+            : `Current stage: ${currentStage}\n\nCurrent Blueprint:\n${compact(blueprint || {})}\n\nLatest user reply:\n${String(userMessage || "").trim()}`
+        }
+      ]
+    }
+  ];
+}
+
+function buildFinalAssemblyInput({ blueprint, resultSchema, language }) {
+  const langRu = language !== "en";
+
+  const instruction = langRu
+    ? `
+Ты работаешь на этапе FINAL ASSEMBLY.
+
+Задача:
+- Использовать Scene Blueprint как источник истины.
+- Использовать Result Schema как правило выдачи.
+- Сгенерировать только разрешённые блоки результата.
+- Не задавать вопросов.
+- Не писать лишних вступлений.
+- Не смешивать все блоки в одну простыню.
+
+Верни ТОЛЬКО JSON:
+{
+  "blocks": {
+    "preview": "...",
+    "video_overview": "...",
+    "visual_emotional_direction": "...",
+    "scene_description": "...",
+    "story_concept": "...",
+    "scene_breakdown": "...",
+    "prompt": "...",
+    "production_notes": "..."
   }
 }
 
-// ============================================================
-// Request contract
-// ============================================================
+Правила:
+- Возвращай только те блоки, которые действительно есть в schema.
+- Если блока нет в schema, не добавляй его.
+- Без markdown.
+- Без пояснений.
+`.trim()
+    : `
+You are in FINAL ASSEMBLY.
 
-function buildSurfaceRequest(body = {}) {
+Task:
+- Use Scene Blueprint as the source of truth.
+- Use Result Schema as the output rule.
+- Generate only the allowed output blocks.
+- Ask no questions.
+- No extra intro.
+- Do not collapse all blocks into one blob.
+
+Return JSON only:
+{
+  "blocks": {
+    "preview": "...",
+    "video_overview": "...",
+    "visual_emotional_direction": "...",
+    "scene_description": "...",
+    "story_concept": "...",
+    "scene_breakdown": "...",
+    "prompt": "...",
+    "production_notes": "..."
+  }
+}
+
+Rules:
+- Return only blocks actually present in the schema.
+- If a block is not in the schema, do not invent it.
+- No markdown.
+- No explanations.
+`.trim();
+
+  return [
+    {
+      role: "system",
+      content: [
+        { type: "input_text", text: buildRolePrompt(blueprint?.meta?.scriptwriter_role, language) },
+        { type: "input_text", text: buildRoleBiasNotes(blueprint?.meta?.scriptwriter_role, language) },
+        { type: "input_text", text: instruction }
+      ]
+    },
+    {
+      role: "user",
+      content: [
+        {
+          type: "input_text",
+          text: langRu
+            ? `Blueprint:\n${compact(blueprint || {})}\n\nResult Schema:\n${compact(resultSchema || {})}`
+            : `Blueprint:\n${compact(blueprint || {})}\n\nResult Schema:\n${compact(resultSchema || {})}`
+        }
+      ]
+    }
+  ];
+}
+
+
+function getImmutableChangeViolation(userMessage) {
+  const text = String(userMessage || "").trim().toLowerCase();
+  if (!text) return null;
+  const rules = [
+    { re: /(не\s+promo|not\s+promo|сделай\s+interactive|make\s+it\s+interactive|другой\s+тип|different\s+type)/i, code: "result_type_change" },
+    { re: /(вариант\s*3|option\s*3|другая\s+сцена|different\s+scene|возьми\s+не\s+эту\s+сцену)/i, code: "seed_scene_change" },
+    { re: /(полностью\s+поменяй\s+идею|change\s+the\s+whole\s+idea|другое\s+видео|video\s+about\s+something\s+else)/i, code: "core_direction_change" }
+  ];
+  const match = rules.find((item) => item.re.test(text));
+  return match ? match.code : null;
+}
+
+function detectPostChatScope(userMessage) {
+  const text = String(userMessage || "").trim().toLowerCase();
+  const scope = new Set();
+  if (!text) return [];
+  if (/(prompt|промпт)/i.test(text)) scope.add("prompt");
+  if (/(preview|превью|overview|обзор)/i.test(text)) { scope.add("preview"); scope.add("video_overview"); }
+  if (/(scene description|описани[ея]\s+сцен|описание\s+сцены)/i.test(text)) scope.add("scene_description");
+  if (/(story concept|концепт|идея\s+истории|story)/i.test(text)) scope.add("story_concept");
+  if (/(scene breakdown|breakdown|разбивк|сцены)/i.test(text)) scope.add("scene_breakdown");
+  if (/(production notes|production|продакшн|notes|заметк)/i.test(text)) scope.add("production_notes");
+  if (/(cta|call to action|призыв)/i.test(text)) { scope.add("prompt"); scope.add("production_notes"); }
+  if (/(tone|тон|премиаль|premium|динамик|dynamic|hook|хук|сильнее|intensity|эмоци)/i.test(text)) {
+    if (!scope.size) { scope.add("prompt"); scope.add("preview"); }
+  }
+  return Array.from(scope);
+}
+
+function buildPostChatInput({ blueprint, deliverableBlocks, userMessage, language }) {
+  const langRu = language !== "en";
+  const editScope = detectPostChatScope(userMessage);
+  const violation = getImmutableChangeViolation(userMessage);
+
+  const instruction = langRu
+    ? `
+Ты работаешь на этапе POST_CHAT controlled improvement.
+
+Задача:
+- Улучшить только уже собранный deliverable.
+- НЕ запускать новый полный цикл.
+- НЕ возвращаться в refinement.
+- НЕ менять video goal, result type, core scene, seed scene и базовое смысловое направление.
+- Если запрос требует смены этой основы — верни out_of_scope.
+- Если запрос слишком общий и неясно, что менять — верни needs_clarification.
+- Если запрос нормальный — измени только нужные блоки deliverable.
+
+Верни ТОЛЬКО JSON:
+{
+  "status": "improved",
+  "message": "...",
+  "edit_scope": ["prompt"],
+  "updated_blocks": {
+    "prompt": "..."
+  },
+  "blocked_reason": null
+}
+
+Правила:
+- status только один из: improved, needs_clarification, out_of_scope.
+- message обязателен всегда.
+- При improved меняй только edit_scope и только связанные блоки.
+- Не дублируй весь deliverable, если пользователь просил локальную правку.
+- При out_of_scope не переписывай блоки, а коротко объясни, что нужен новый цикл.
+- При needs_clarification не переписывай блоки, а коротко спроси, что именно улучшить.
+- Без markdown.
+- Без пояснений вне JSON.
+`.trim()
+    : `
+You are in POST_CHAT controlled improvement.
+
+Task:
+- Improve only the already assembled deliverable.
+- Do NOT start a new full cycle.
+- Do NOT go back to refinement.
+- Do NOT change video goal, result type, core scene, seed scene, or the base direction.
+- If the request tries to change that foundation, return out_of_scope.
+- If the request is too vague, return needs_clarification.
+- Otherwise improve only the needed deliverable blocks.
+
+Return JSON only:
+{
+  "status": "improved",
+  "message": "...",
+  "edit_scope": ["prompt"],
+  "updated_blocks": {
+    "prompt": "..."
+  },
+  "blocked_reason": null
+}
+
+Rules:
+- status must be one of: improved, needs_clarification, out_of_scope.
+- message is always required.
+- On improved, update only the targeted scope and directly adjacent blocks if truly needed.
+- Do not resend the whole deliverable when the user requested a local change.
+- On out_of_scope, do not rewrite blocks; explain that a new cycle is required.
+- On needs_clarification, do not rewrite blocks; ask what exactly should be improved.
+- No markdown.
+- No extra text outside JSON.
+`.trim();
+
+  const contextText = langRu
+    ? `Текущий Blueprint:
+${compact(blueprint || {})}
+
+Текущий deliverable blocks:
+${compact(deliverableBlocks || {})}
+
+Запрос пользователя:
+${String(userMessage || "").trim()}
+
+Предварительно определённый scope:
+${compact(editScope)}
+
+Guardrail violation:
+${violation || "none"}`
+    : `Current Blueprint:
+${compact(blueprint || {})}
+
+Current deliverable blocks:
+${compact(deliverableBlocks || {})}
+
+User request:
+${String(userMessage || "").trim()}
+
+Pre-detected scope:
+${compact(editScope)}
+
+Guardrail violation:
+${violation || "none"}`;
+
+  return [
+    {
+      role: "system",
+      content: [
+        { type: "input_text", text: buildRolePrompt(blueprint?.meta?.scriptwriter_role, language) },
+        { type: "input_text", text: buildRoleBiasNotes(blueprint?.meta?.scriptwriter_role, language) },
+        { type: "input_text", text: instruction }
+      ]
+    },
+    {
+      role: "user",
+      content: [{ type: "input_text", text: contextText }]
+    }
+  ];
+}
+
+function getClarificationMessage(language) {
+  return language === "en"
+    ? "Please уточни what exactly to improve: Prompt, CTA, Preview, Overview, Breakdown, Story Concept or Notes."
+    : "Уточни, что именно улучшить: Prompt, CTA, Preview, Overview, Breakdown, Story Concept или Notes.";
+}
+
+function pickAllowedPostChatBlocks(scope) {
+  const requested = Array.isArray(scope) ? scope.filter(Boolean) : [];
+  const allowed = new Set(["prompt", "preview", "video_overview", "scene_description", "story_concept", "scene_breakdown", "production_notes"]);
+  return requested.filter((key) => allowed.has(key));
+}
+
+function sanitizeUpdatedBlocks(updatedBlocks, editScope) {
+  const allowedKeys = new Set(pickAllowedPostChatBlocks(editScope));
+  const next = {};
+  Object.entries(updatedBlocks && typeof updatedBlocks === "object" ? updatedBlocks : {}).forEach(([key, value]) => {
+    if (!allowedKeys.has(key)) return;
+    if (typeof value !== "string") return;
+    const text = value.trim();
+    if (!text) return;
+    next[key] = text;
+  });
+  return next;
+}
+
+function hasUsableUpdatedBlocks(updatedBlocks, editScope) {
+  const keys = Object.keys(sanitizeUpdatedBlocks(updatedBlocks, editScope));
+  if (!keys.length) return false;
+  return keys.some(Boolean);
+}
+
+function buildLocalPostChatFallback(deliverableBlocks, editScope, userMessage, language) {
+  const blocks = deliverableBlocks && typeof deliverableBlocks === "object" ? deliverableBlocks : {};
+  const scope = pickAllowedPostChatBlocks(editScope);
+  const text = String(userMessage || "").trim();
+  const lower = text.toLowerCase();
+  const updates = {};
+
+  function withNote(base, noteRu, noteEn) {
+    const note = language === "en" ? noteEn : noteRu;
+    const content = String(base || "").trim();
+    return content ? `${note}
+
+${content}` : note;
+  }
+
+  if (scope.includes("prompt")) {
+    const noteRu = /cta|призыв/i.test(text)
+      ? "Обновил Prompt: усилил CTA и финальное действие пользователя."
+      : /преми|premium/i.test(lower)
+        ? "Обновил Prompt: сделал тон более премиальным и точным."
+        : "Обновил Prompt: усилил формулировку и читаемость для генерации.";
+    const noteEn = /cta|call to action/i.test(text)
+      ? "Updated Prompt: strengthened the CTA and the final user action."
+      : /premium/i.test(lower)
+        ? "Updated Prompt: made the tone more premium and precise."
+        : "Updated Prompt: strengthened the wording and generator-readiness.";
+    updates.prompt = withNote(blocks.prompt, noteRu, noteEn);
+  }
+
+  if (scope.includes("production_notes")) {
+    const noteRu = /cta|призыв/i.test(text)
+      ? "Обновил Production Notes: усилил CTA-слой, коммерческое действие и финальный акцент."
+      : "Обновил Production Notes: уточнил практические акценты и исполнительские указания.";
+    const noteEn = /cta|call to action/i.test(text)
+      ? "Updated Production Notes: strengthened the CTA layer, commercial action and final emphasis."
+      : "Updated Production Notes: refined the practical emphasis and execution notes.";
+    updates.production_notes = withNote(blocks.production_notes, noteRu, noteEn);
+  }
+
+  if (scope.includes("preview")) {
+    updates.preview = withNote(blocks.preview, "Обновил Preview: сделал вход сильнее и чище.", "Updated Preview: made the opening sharper and clearer.");
+  }
+  if (scope.includes("video_overview")) {
+    updates.video_overview = withNote(blocks.video_overview, "Обновил Overview: усилил общий вектор и подачу.", "Updated Overview: strengthened the overall direction and framing.");
+  }
+  if (scope.includes("scene_description")) {
+    updates.scene_description = withNote(blocks.scene_description, "Обновил Scene Description: сделал описание более выразительным.", "Updated Scene Description: made the description more vivid.");
+  }
+  if (scope.includes("story_concept")) {
+    updates.story_concept = withNote(blocks.story_concept, "Обновил Story Concept: сделал идею точнее и сильнее.", "Updated Story Concept: made the concept sharper and stronger.");
+  }
+  if (scope.includes("scene_breakdown")) {
+    updates.scene_breakdown = withNote(blocks.scene_breakdown, "Обновил Scene Breakdown: усилил структуру и полезность для сборки.", "Updated Scene Breakdown: strengthened the structure and execution usefulness.");
+  }
+
+  return updates;
+}
+
+function normalizePostChatResult(parsed, userMessage, deliverableBlocks = {}, language = "ru") {
+  const data = parsed && typeof parsed === "object" ? { ...parsed } : {};
+  const violation = getImmutableChangeViolation(userMessage);
+  const detectedScope = detectPostChatScope(userMessage);
+  const status = String(data.status || "").trim().toLowerCase();
+  const vague = !detectedScope.length && String(userMessage || "").trim().length < 18;
+  const normalized = {
+    status: status || (violation ? "out_of_scope" : (vague ? "needs_clarification" : "improved")),
+    message: typeof data.message === "string" ? data.message.trim() : "",
+    edit_scope: Array.isArray(data.edit_scope) ? data.edit_scope.filter(Boolean) : detectedScope,
+    updated_blocks: data.updated_blocks && typeof data.updated_blocks === "object" ? data.updated_blocks : {},
+    blocked_reason: typeof data.blocked_reason === "string" ? data.blocked_reason.trim() : null
+  };
+  if (violation) {
+    normalized.status = "out_of_scope";
+    normalized.updated_blocks = {};
+    normalized.edit_scope = [];
+    normalized.blocked_reason = violation;
+    if (!normalized.message) {
+      normalized.message = language === "en"
+        ? "This request changes the base direction and needs a new cycle."
+        : "Этот запрос меняет базовую основу результата и требует нового цикла.";
+    }
+  }
+  if (normalized.status === "needs_clarification") {
+    normalized.updated_blocks = {};
+    if (!normalized.message) normalized.message = getClarificationMessage(language);
+  }
+  if (normalized.status === "out_of_scope") {
+    normalized.updated_blocks = {};
+  }
+  if (normalized.status === "improved" && !normalized.edit_scope.length) {
+    normalized.status = "needs_clarification";
+    normalized.updated_blocks = {};
+    normalized.message = normalized.message || getClarificationMessage(language);
+  }
+  normalized.updated_blocks = sanitizeUpdatedBlocks(normalized.updated_blocks, normalized.edit_scope);
+  if (normalized.status === "improved" && !hasUsableUpdatedBlocks(normalized.updated_blocks, normalized.edit_scope)) {
+    normalized.updated_blocks = buildLocalPostChatFallback(deliverableBlocks, normalized.edit_scope, userMessage, language);
+  }
+  if (normalized.status === "improved" && !hasUsableUpdatedBlocks(normalized.updated_blocks, normalized.edit_scope)) {
+    normalized.status = "needs_clarification";
+    normalized.updated_blocks = {};
+    normalized.message = normalized.message || getClarificationMessage(language);
+  }
+  return normalized;
+}
+
+async function repairPostChatExecutionIfNeeded(normalizedParsed, deliverableBlocks, userMessage, language) {
+  const current = normalizedParsed && typeof normalizedParsed === "object" ? { ...normalizedParsed } : {};
+  if (current.status !== "improved") return current;
+  if (hasUsableUpdatedBlocks(current.updated_blocks, current.edit_scope)) return current;
+  const scope = pickAllowedPostChatBlocks(current.edit_scope);
+  if (!scope.length) return current;
+
+  const langRu = language !== "en";
+  const instruction = langRu
+    ? `Ты исправляешь POST_CHAT execution. Верни только JSON с обновлёнными targeted blocks. Не меняй базовую сцену, goal, тип результата. Не возвращай пустой updated_blocks.`
+    : `You are repairing POST_CHAT execution. Return JSON only with the updated targeted blocks. Do not change the base scene, goal or result type. Do not return empty updated_blocks.`;
+  const contextText = langRu
+    ? `Текущий deliverable:
+${compact(deliverableBlocks || {})}
+
+Запрос пользователя:
+${String(userMessage || '').trim()}
+
+Целевой scope:
+${compact(scope)}`
+    : `Current deliverable:
+${compact(deliverableBlocks || {})}
+
+User request:
+${String(userMessage || '').trim()}
+
+Target scope:
+${compact(scope)}`;
+
+  try {
+    const repair = await callOpenAI([
+      { role: "system", content: [{ type: "input_text", text: instruction }] },
+      { role: "user", content: [{ type: "input_text", text: contextText }] }
+    ]);
+    const repaired = normalizePostChatResult(repair.parsed, userMessage, deliverableBlocks, language);
+    if (repaired.status === "improved" && hasUsableUpdatedBlocks(repaired.updated_blocks, repaired.edit_scope)) {
+      return repaired;
+    }
+  } catch (_) {}
+
+  const fallbackBlocks = buildLocalPostChatFallback(deliverableBlocks, scope, userMessage, language);
+  if (hasUsableUpdatedBlocks(fallbackBlocks, scope)) {
+    return {
+      status: "improved",
+      message: current.message || (langRu ? "Обновил выбранный блок deliverable." : "Updated the selected deliverable block."),
+      edit_scope: scope,
+      updated_blocks: fallbackBlocks,
+      blocked_reason: null
+    };
+  }
+
   return {
-    stage: normalizeExecutionSurface(body.stage),
-    language: normalizeLanguage(body.language),
-    blueprint: ensureObject(body.blueprint),
-    user_input: body.user_input ?? null,
-    ui_context: ensureObject(body.ui_context),
-    advanced_options: ensureObject(body.advanced_options),
-    meta: ensureObject(body.meta)
+    status: "needs_clarification",
+    message: getClarificationMessage(language),
+    edit_scope: [],
+    updated_blocks: {},
+    blocked_reason: null
   };
 }
 
-function normalizeExecutionSurface(value) {
-  const stage = String(value || "").trim().toLowerCase();
-
-  if (Object.values(EXECUTION_SURFACES).includes(stage)) {
-    return stage;
-  }
-
-  throw new Error(`Unsupported execution surface: ${value}`);
-}
-
-function normalizeLanguage(value) {
-  return String(value || "ru").trim().toLowerCase() === "en" ? "en" : "ru";
-}
-
-// ============================================================
-// Core executor
-// build is explicit surface, not normal stage-handling
-// ============================================================
-
-async function executeSurface(surfaceRequest) {
-  const { stage } = surfaceRequest;
-
-  if (stage === EXECUTION_SURFACES.BUILD) {
-    return executeBuildSurface(surfaceRequest);
-  }
-
-  switch (stage) {
-    case STAGES.SCENE_IDEAS:
-      return executeSceneIdeas(surfaceRequest);
-    case STAGES.SELECTION:
-      return executeSelection(surfaceRequest);
-    case STAGES.REFINEMENT:
-      return executeRefinement(surfaceRequest);
-    case STAGES.ALIGNMENT:
-      return executeAlignment(surfaceRequest);
-    default:
-      return buildErrorEnvelope({
-        stage,
-        code: "UNSUPPORTED_STAGE",
-        message: "Unsupported stage"
-      });
-  }
-}
-
-// ============================================================
-// Normal stage handlers
-// ============================================================
-
-async function executeSceneIdeas(surfaceRequest) {
-  assertSceneIdeasRequest(surfaceRequest);
-
-  const modelInput = buildSceneIdeasInput(surfaceRequest);
-  const modelRaw = await callModel(modelInput);
-  const validated = validateSceneIdeasResponse(modelRaw);
-  const normalized = normalizeSceneIdeasResponse(validated, surfaceRequest);
-
-  return buildJsonEnvelope({
-    stage: STAGES.SCENE_IDEAS,
-    status: STATUSES.OK,
-    output: normalized.output,
-    meta: buildMeta(surfaceRequest, { patch_allowed: false }),
-    blueprint_patch: null,
-    error: null
-  });
-}
-
-async function executeSelection(surfaceRequest) {
-  assertSelectionRequest(surfaceRequest);
-
-  const modelInput = buildSelectionInput(surfaceRequest);
-  const modelRaw = await callModel(modelInput);
-  const validated = validateSelectionResponse(modelRaw);
-  const normalized = normalizeSelectionResponse(validated, surfaceRequest);
-
-  return buildJsonEnvelope({
-    stage: STAGES.SELECTION,
-    status: STATUSES.OK,
-    output: normalized.output,
-    meta: buildMeta(surfaceRequest, { patch_allowed: true }),
-    blueprint_patch: normalized.blueprint_patch,
-    error: null
-  });
-}
-
-async function executeRefinement(surfaceRequest) {
-  assertRefinementRequest(surfaceRequest);
-
-  const modelInput = buildRefinementInput(surfaceRequest);
-  const modelRaw = await callModel(modelInput);
-  const validated = validateRefinementResponse(modelRaw);
-  const normalized = normalizeRefinementResponse(validated);
-
-  return buildJsonEnvelope({
-    stage: STAGES.REFINEMENT,
-    status: STATUSES.OK,
-    output: normalized.output,
-    meta: buildMeta(surfaceRequest, { patch_allowed: true }),
-    blueprint_patch: normalized.blueprint_patch,
-    error: null
-  });
-}
-
-async function executeAlignment(surfaceRequest) {
-  assertAlignmentRequest(surfaceRequest);
-
-  const modelInput = buildAlignmentInput(surfaceRequest);
-  const modelRaw = await callModel(modelInput);
-  const validated = validateAlignmentResponse(modelRaw);
-  const normalized = normalizeAlignmentResponse(validated);
-
-  return buildJsonEnvelope({
-    stage: STAGES.ALIGNMENT,
-    status: STATUSES.OK,
-    output: normalized.output,
-    meta: buildMeta(surfaceRequest, { patch_allowed: false }),
-    blueprint_patch: null,
-    error: null
-  });
-}
-
-// ============================================================
-// Build execution surface
-// ============================================================
-
-async function executeBuildSurface(surfaceRequest) {
-  assertBuildRequest(surfaceRequest);
-
-  const modelInput = buildBuildInput(surfaceRequest);
-  const modelRaw = await callModel(modelInput);
-  const validated = validateBuildResponse(modelRaw);
-  const normalized = normalizeBuildResponse(validated);
-
-  return buildJsonEnvelope({
-    stage: EXECUTION_SURFACES.BUILD,
-    status: STATUSES.OK,
-    output: normalized.output,
-    meta: buildMeta(surfaceRequest, { patch_allowed: false }),
-    blueprint_patch: null,
-    error: null
-  });
-}
-
-// ============================================================
-// Input assertions
-// no readiness logic, only surface-level input sanity
-// ============================================================
-
-function assertSceneIdeasRequest(surfaceRequest) {
-  if (!surfaceRequest.blueprint?.meta?.video_type) {
-    throw new Error("Missing blueprint.meta.video_type for scene_ideas");
-  }
-  if (!surfaceRequest.blueprint?.meta?.scriptwriter_role) {
-    throw new Error("Missing blueprint.meta.scriptwriter_role for scene_ideas");
-  }
-  if (!surfaceRequest.blueprint?.goal?.video_topic) {
-    throw new Error("Missing blueprint.goal.video_topic for scene_ideas");
-  }
-}
-
-function assertSelectionRequest(surfaceRequest) {
-  const selectedScene = extractSelectedScene(surfaceRequest.user_input);
-  if (!selectedScene) {
-    throw new Error("Missing selected scene for selection");
-  }
-}
-
-function assertRefinementRequest(surfaceRequest) {
-  if (!surfaceRequest.user_input) {
-    throw new Error("Missing user_input for refinement");
-  }
-}
-
-function assertAlignmentRequest(surfaceRequest) {
-  if (!surfaceRequest.blueprint || typeof surfaceRequest.blueprint !== "object") {
-    throw new Error("Missing blueprint for alignment");
-  }
-}
-
-function assertBuildRequest(surfaceRequest) {
-  if (!surfaceRequest.blueprint || typeof surfaceRequest.blueprint !== "object") {
-    throw new Error("Missing blueprint for build");
-  }
-}
-
-// ============================================================
-// Stage-specific input building
-// ============================================================
-
-function buildSceneIdeasInput(surfaceRequest) {
-  const lang = surfaceRequest.language;
-
-  return [
-    {
-      role: "system",
-      content: [
-        {
-          type: "input_text",
-          text:
-            `${getLanguageInstruction(lang)}\n` +
-            (lang === "en"
-              ? [
-                  "You work only for the current stage: scene_ideas.",
-                  "Return JSON only.",
-                  "Do not return route decisions.",
-                  "Generate exactly 3 scene ideas.",
-                  "Each idea must contain: slot, title, seed_scene, why_it_fits.",
-                  "Allowed slots: precise, variation, creative.",
-                  "Do not return blueprint patch.",
-                  "No markdown."
-                ].join("\n")
-              : [
-                  "Ты работаешь только для текущего этапа: scene_ideas.",
-                  "Верни только JSON.",
-                  "Не возвращай route decisions.",
-                  "Сгенерируй ровно 3 идеи сцены.",
-                  "Каждая идея должна содержать: slot, title, seed_scene, why_it_fits.",
-                  "Допустимые slot: precise, variation, creative.",
-                  "Не возвращай blueprint patch.",
-                  "Без markdown."
-                ].join("\n"))
-        }
-      ]
-    },
-    {
-      role: "user",
-      content: [
-        {
-          type: "input_text",
-          text:
-            `Blueprint:\n${compact(surfaceRequest.blueprint)}\n\n` +
-            `UI context:\n${compact(surfaceRequest.ui_context)}\n\n` +
-            `Advanced options:\n${compact(surfaceRequest.advanced_options)}`
-        }
-      ]
-    }
-  ];
-}
-
-function buildSelectionInput(surfaceRequest) {
-  const lang = surfaceRequest.language;
-  const selectedScene = extractSelectedScene(surfaceRequest.user_input);
-
-  return [
-    {
-      role: "system",
-      content: [
-        {
-          type: "input_text",
-          text:
-            `${getLanguageInstruction(lang)}\n` +
-            (lang === "en"
-              ? [
-                  "You work only for the current stage: selection.",
-                  "Selection is not route ownership.",
-                  "Return JSON only.",
-                  "No route decisions.",
-                  "Allowed patch path only:",
-                  "- scene_core.seed_scene",
-                  "Do not return any other blueprint patch fields.",
-                  "Return a short current-stage message.",
-                  "No markdown."
-                ].join("\n")
-              : [
-                  "Ты работаешь только для текущего этапа: selection.",
-                  "Selection не даёт ownership над маршрутом.",
-                  "Верни только JSON.",
-                  "Без route decisions.",
-                  "Разрешённый patch path только:",
-                  "- scene_core.seed_scene",
-                  "Не возвращай никакие другие blueprint patch fields.",
-                  "Верни короткое сообщение только для текущего этапа.",
-                  "Без markdown."
-                ].join("\n"))
-        }
-      ]
-    },
-    {
-      role: "user",
-      content: [
-        {
-          type: "input_text",
-          text:
-            `Blueprint:\n${compact(surfaceRequest.blueprint)}\n\n` +
-            `Selected scene content:\n${selectedScene}\n\n` +
-            `User input:\n${compact(surfaceRequest.user_input)}\n\n` +
-            `Advanced options:\n${compact(surfaceRequest.advanced_options)}`
-        }
-      ]
-    }
-  ];
-}
-
-function buildRefinementInput(surfaceRequest) {
-  const lang = surfaceRequest.language;
-
-  return [
-    {
-      role: "system",
-      content: [
-        {
-          type: "input_text",
-          text:
-            `${getLanguageInstruction(lang)}\n` +
-            (lang === "en"
-              ? [
-                  "You work only for the current stage: refinement.",
-                  "Return JSON only.",
-                  "No route decisions.",
-                  "No readiness logic.",
-                  "Return only current-stage output.",
-                  "Output fields: message, questions, patch.",
-                  "Questions must be short, concrete and current-stage only.",
-                  "Allowed patch paths only:",
-                  "- goal.video_topic",
-                  "- goal.video_goal",
-                  "- scene_core.seed_scene",
-                  "- narrative.scene_setup",
-                  "- narrative.scene_development",
-                  "- visual_direction.emotion",
-                  "Do not return any other blueprint patch paths.",
-                  "Do not return conditional sections.",
-                  "No markdown."
-                ].join("\n")
-              : [
-                  "Ты работаешь только для текущего этапа: refinement.",
-                  "Верни только JSON.",
-                  "Без route decisions.",
-                  "Без readiness logic.",
-                  "Верни только output текущего этапа.",
-                  "Поля output: message, questions, patch.",
-                  "Вопросы должны быть короткими, конкретными и только по текущему этапу.",
-                  "Разрешённые patch paths только:",
-                  "- goal.video_topic",
-                  "- goal.video_goal",
-                  "- scene_core.seed_scene",
-                  "- narrative.scene_setup",
-                  "- narrative.scene_development",
-                  "- visual_direction.emotion",
-                  "Не возвращай никакие другие blueprint patch paths.",
-                  "Не возвращай conditional sections.",
-                  "Без markdown."
-                ].join("\n"))
-        }
-      ]
-    },
-    {
-      role: "user",
-      content: [
-        {
-          type: "input_text",
-          text:
-            `Blueprint:\n${compact(surfaceRequest.blueprint)}\n\n` +
-            `User input:\n${compact(surfaceRequest.user_input)}\n\n` +
-            `Advanced options:\n${compact(surfaceRequest.advanced_options)}`
-        }
-      ]
-    }
-  ];
-}
-
-function buildAlignmentInput(surfaceRequest) {
-  const lang = surfaceRequest.language;
-
-  return [
-    {
-      role: "system",
-      content: [
-        {
-          type: "input_text",
-          text:
-            `${getLanguageInstruction(lang)}\n` +
-            (lang === "en"
-              ? [
-                  "You work only for the current stage: alignment.",
-                  "Return JSON only.",
-                  "No route decisions.",
-                  "No build admission.",
-                  "Return a short alignment-supporting message.",
-                  "Do not return blueprint patch.",
-                  "Do not open new branches.",
-                  "Do not ask broad new questions.",
-                  "No markdown."
-                ].join("\n")
-              : [
-                  "Ты работаешь только для текущего этапа: alignment.",
-                  "Верни только JSON.",
-                  "Без route decisions.",
-                  "Без build admission.",
-                  "Верни короткое alignment-supporting сообщение.",
-                  "Не возвращай blueprint patch.",
-                  "Не открывай новые ветки.",
-                  "Не задавай широких новых вопросов.",
-                  "Без markdown."
-                ].join("\n"))
-        }
-      ]
-    },
-    {
-      role: "user",
-      content: [
-        {
-          type: "input_text",
-          text:
-            `Blueprint:\n${compact(surfaceRequest.blueprint)}\n\n` +
-            `User input:\n${compact(surfaceRequest.user_input)}\n\n` +
-            `Advanced options:\n${compact(surfaceRequest.advanced_options)}`
-        }
-      ]
-    }
-  ];
-}
-
-function buildBuildInput(surfaceRequest) {
-  const lang = surfaceRequest.language;
-  const resultSchema = safeResultSchemaSnapshot(surfaceRequest?.meta?.result_schema);
-  const schemaPrompt = buildBuildSchemaPrompt(resultSchema, lang);
-
-  return [
-    {
-      role: "system",
-      content: [
-        {
-          type: "input_text",
-          text:
-            `${getLanguageInstruction(lang)}\n` +
-            (lang === "en"
-              ? [
-                  "You work only for the explicit build surface.",
-                  "Build is a user action, not a normal stage.",
-                  "Return JSON only.",
-                  "No route decisions.",
-                  "No questions.",
-                  "No blueprint patch.",
-                  "Return only the current build output as structured blocks.",
-                  "Use result_schema as a hard pre-generation constraint.",
-                  "Generate only the allowed blocks from result_schema.blocks.",
-                  "Do not generate any forbidden blocks.",
-                  "Preserve the block order from result_schema.blocks.",
-                  "No markdown."
-                ].join("\n")
-              : [
-                  "Ты работаешь только для explicit build surface.",
-                  "Build — это действие пользователя, а не normal stage.",
-                  "Верни только JSON.",
-                  "Без route decisions.",
-                  "Без questions.",
-                  "Без blueprint patch.",
-                  "Верни только текущий build output как structured blocks.",
-                  "Используй result_schema как жёсткое pre-generation ограничение.",
-                  "Генерируй только разрешённые блоки из result_schema.blocks.",
-                  "Не генерируй запрещённые блоки.",
-                  "Сохраняй порядок блоков из result_schema.blocks.",
-                  "Без markdown."
-                ].join("\n")) +
-            `\n\n${schemaPrompt}`
-        }
-      ]
-    },
-    {
-      role: "user",
-      content: [
-        {
-          type: "input_text",
-          text:
-            `Blueprint:\n${compact(surfaceRequest.blueprint)}\n\n` +
-            `Advanced options:\n${compact(surfaceRequest.advanced_options)}\n\n` +
-            `Result schema:\n${compact(resultSchema)}`
-        }
-      ]
-    }
-  ];
-}
-
-// ============================================================
-// Model call
-// ============================================================
-
-async function callModel(modelInput) {
-  if (!process.env.OPENAI_API_KEY) {
-    throw new Error("Missing OPENAI_API_KEY");
-  }
-
-  const response = await fetch(OPENAI_URL, {
+async function callOpenAI(input) {
+  const r = await fetch(OPENAI_URL, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
@@ -630,563 +1120,267 @@ async function callModel(modelInput) {
     },
     body: JSON.stringify({
       model: MODEL,
-      input: modelInput,
-      text: {
-        format: {
-          type: "json_object"
-        }
-      },
+      input,
+      text: { format: { type: "json_object" } },
       max_output_tokens: 1400
     })
   });
 
-  if (!response.ok) {
-    const text = await response.text();
+  if (!r.ok) {
+    const text = await r.text();
     throw new Error(text || "OpenAI request failed");
   }
 
-  const data = await response.json();
-  const rawText =
+  const data = await r.json();
+  const raw =
     data.output_text ||
     (Array.isArray(data.output)
       ? data.output
-          .flatMap((item) => item.content || [])
-          .filter((item) => item.type === "output_text" && item.text)
-          .map((item) => item.text)
+          .flatMap((o) => o.content || [])
+          .filter((c) => c.type === "output_text" && c.text)
+          .map((c) => c.text)
           .join("\n")
       : "");
 
-  if (!rawText) {
+  if (!raw) {
     throw new Error("Empty OpenAI response");
   }
 
-  let parsedJson;
-  try {
-    parsedJson = JSON.parse(rawText);
-  } catch (_) {
-    throw new Error("Invalid JSON from model");
-  }
-
-  return {
-    raw_text: rawText,
-    parsed_json: parsedJson
-  };
+  return { raw, parsed: JSON.parse(raw) };
 }
 
-// ============================================================
-// Response validation
-// ============================================================
+function buildStructuredChoiceRefinementPatch(blueprint, refinementInput = {}, language = "ru") {
+  const inputMode = String(refinementInput?.inputMode || "").trim().toLowerCase();
+  const choice = refinementInput?.structuredChoice && typeof refinementInput.structuredChoice === "object"
+    ? refinementInput.structuredChoice
+    : null;
 
-function validateSceneIdeasResponse(modelRaw) {
-  const data = validateBaseModelObject(modelRaw, STAGES.SCENE_IDEAS);
+  if (inputMode !== "structured_choice" || !choice) return {};
 
-  if (!Array.isArray(data.ideas)) {
-    throw new Error("scene_ideas model response must contain ideas array");
+  const targetAnchor = String(choice.target_anchor || "").trim();
+  if (!targetAnchor) return {};
+
+  let value = choice.selected_option_value;
+  if (value === undefined || value === null || String(value).trim() === "") {
+    const optionIndex = Number(choice.selected_option_id || 0);
+    const options = getSafeAnchorOptions(targetAnchor, language);
+    if (Number.isInteger(optionIndex) && optionIndex >= 1 && optionIndex <= options.length) {
+      value = options[optionIndex - 1];
+    }
+  }
+
+  const finalValue = String(value || "").trim();
+  if (!finalValue) return {};
+  return { [targetAnchor]: finalValue };
+}
+
+function normalizeRefinementResult(parsed, currentStage, blueprint, refinementInput = {}) {
+  const data = parsed && typeof parsed === "object" ? { ...parsed } : {};
+  blueprint = ensureRefinementBlueprintIntegrity(blueprint);
+  const stage = normalizeStage(currentStage);
+  const userMessage = typeof refinementInput === 'string'
+    ? refinementInput
+    : String(refinementInput?.userMessage || "").trim();
+  const language = blueprint?.meta?.language || refinementInput?.language || 'ru';
+  const structuredChoicePatch = buildStructuredChoiceRefinementPatch(blueprint, {
+    userMessage,
+    inputMode: refinementInput?.inputMode,
+    structuredChoice: refinementInput?.structuredChoice
+  }, language);
+  data.patch = {
+    ...(sanitizeRefinementPatch(data.patch, blueprint) || {}),
+    ...structuredChoicePatch
+  };
+  const normalizedStage = String(data.response_stage || "").trim().toLowerCase();
+  const weakAck = isWeakAcknowledgement(userMessage);
+
+  if (stage === "development") {
+    data.response_stage = normalizedStage || "development";
+    data.ready_hint = false;
+    data.patch = { ...(data.patch || {}), "system_state.refinement_focus_anchors": getPriorityAnchors(blueprint, data.patch || {}, userMessage, 2) };
+    if (!String(data.message || '').trim()) data.message = buildLoopMessage(blueprint, data.patch, userMessage, language);
+    return data;
+  }
+
+  const criticalMissing = getCriticalAlignmentMissingFromState(blueprint, data.patch || {});
+  const priorityAnchors = getPriorityAnchors(blueprint, data.patch || {}, userMessage, 2);
+  if (weakAck) {
+    ["goal.video_goal", "goal.audience", "marketing_layer.message", "marketing_layer.product_focus", "marketing_layer.cta"].forEach((path) => {
+      delete data.patch?.[path];
+    });
+  }
+  data.patch = { ...(data.patch || {}), "system_state.refinement_focus_anchors": priorityAnchors };
+
+  if (criticalMissing.length || priorityAnchors.length || weakAck) {
+    data.ready_hint = false;
+    data.response_stage = "refinement";
+    data.questions = [];
+    data.message = buildLoopMessage(blueprint, data.patch, userMessage, language);
+  } else if (data.ready_hint === true && !criticalMissing.length && !priorityAnchors.length) {
+    data.response_stage = "alignment";
+  } else {
+    data.response_stage = normalizedStage || "refinement";
+    if (data.response_stage === 'refinement') {
+      data.message = buildLoopMessage(blueprint, data.patch, userMessage, language);
+      data.questions = [];
+    }
   }
 
   return data;
 }
 
-function validateSelectionResponse(modelRaw) {
-  const data = validateBaseModelObject(modelRaw, STAGES.SELECTION);
 
-  if (typeof data.message !== "string" || !data.message.trim()) {
-    throw new Error("selection model response must contain message");
-  }
-
-  if (data.patch != null && !isPlainObject(data.patch)) {
-    throw new Error("selection patch must be an object");
-  }
-
-  return data;
+function diffPatchPaths(patch) {
+  if (!patch || typeof patch !== "object") return [];
+  return Object.keys(patch).filter(Boolean).sort();
 }
 
-function validateRefinementResponse(modelRaw) {
-  const data = validateBaseModelObject(modelRaw, STAGES.REFINEMENT);
-
-  if (typeof data.message !== "string" || !data.message.trim()) {
-    throw new Error("refinement model response must contain message");
-  }
-
-  if (data.questions != null && !Array.isArray(data.questions)) {
-    throw new Error("refinement questions must be an array");
-  }
-
-  if (data.patch != null && !isPlainObject(data.patch)) {
-    throw new Error("refinement patch must be an object");
-  }
-
-  return data;
-}
-
-function validateAlignmentResponse(modelRaw) {
-  const data = validateBaseModelObject(modelRaw, STAGES.ALIGNMENT);
-
-  if (typeof data.message !== "string" || !data.message.trim()) {
-    throw new Error("alignment model response must contain message");
-  }
-
-  if (data.questions != null && !Array.isArray(data.questions)) {
-    throw new Error("alignment questions must be an array");
-  }
-
-  if (data.patch != null && !isPlainObject(data.patch)) {
-    throw new Error("alignment patch must be an object");
-  }
-
-  return data;
-}
-
-function validateBuildResponse(modelRaw) {
-  const data = validateBaseModelObject(modelRaw, EXECUTION_SURFACES.BUILD);
-
-  if (!isPlainObject(data.blocks)) {
-    throw new Error("build model response must contain blocks object");
-  }
-
-  return data;
-}
-
-function validateBaseModelObject(modelRaw, expectedSurface) {
-  const data = modelRaw?.parsed_json;
-
-  if (!isPlainObject(data)) {
-    throw new Error(`${expectedSurface} model response must be a JSON object`);
-  }
-
-  rejectForbiddenRouteKeys(data);
-
-  return data;
-}
-
-// ============================================================
-// Response normalization
-// ============================================================
-
-function normalizeSceneIdeasResponse(validated, surfaceRequest) {
-  const ideas = validated.ideas
-    .map(normalizeSceneIdea)
-    .filter(Boolean)
-    .slice(0, 3);
-
-  const bySlot = enforceSceneIdeaSlots(ideas, surfaceRequest.language);
-
-  return {
-    output: {
-      ideas: bySlot
+function detectPatchSources(blueprint, patch) {
+  const sources = {};
+  const userMessage = String(blueprint?.system_state?.last_user_message || "").trim();
+  const knownInputs = new Set(Array.isArray(blueprint?.system_state?.known_inputs) ? blueprint.system_state.known_inputs : []);
+  for (const path of diffPatchPaths(patch)) {
+    if (["goal.user_request_summary", "system_state.last_user_message"].includes(path) && userMessage) {
+      sources[path] = "user_input";
+    } else if (knownInputs.has(path.split('.').slice(-1)[0])) {
+      sources[path] = "ui_input";
+    } else {
+      sources[path] = "scriptwriter_interpretation";
     }
+  }
+  return sources;
+}
+
+function buildServerTrace({ blueprint, action, parsed, normalizedParsed }) {
+  const currentStage = normalizeStage(blueprint?.system_state?.current_stage);
+  const data = normalizedParsed || parsed || {};
+  const patch = data && typeof data.patch === "object" ? data.patch : {};
+  const patchedFields = diffPatchPaths(patch);
+  const merged = mergePatchIntoBlueprint(blueprint || {}, patch || {});
+  const criticalAlignmentMissing = getCriticalAlignmentMissingFromState(blueprint || {}, patch || {});
+  const minimumUsableMissing = Array.isArray(merged?.system_state?.minimum_usable_missing) ? merged.system_state.minimum_usable_missing : [];
+  return {
+    current_stage_before: currentStage,
+    requested_action: action,
+    response_stage: String(data?.response_stage || "").trim().toLowerCase() || null,
+    ready_hint: !!data?.ready_hint,
+    patched_fields: patchedFields,
+    patched_field_sources: detectPatchSources(blueprint, patch),
+    critical_alignment_missing: criticalAlignmentMissing,
+    minimum_usable_missing: minimumUsableMissing,
+    message_present: typeof data?.message === "string" && data.message.trim().length > 0,
+    questions_count: Array.isArray(data?.questions) ? data.questions.length : 0,
   };
 }
 
-function normalizeSelectionResponse(validated, surfaceRequest) {
-  const selectedScene = extractSelectedScene(surfaceRequest.user_input);
-
-  return {
-    output: {
-      message: safeTrim(validated.message),
-      questions: []
-    },
-    blueprint_patch: selectedScene
-      ? { "scene_core.seed_scene": selectedScene }
-      : {}
-  };
-}
-
-function normalizeRefinementResponse(validated) {
-  const patch = sanitizePatchByPolicy(validated.patch, EXECUTION_SURFACES.REFINEMENT);
-
-  return {
-    output: {
-      message: safeTrim(validated.message),
-      questions: normalizeQuestions(validated.questions)
-    },
-    blueprint_patch: patch
-  };
-}
-
-function normalizeAlignmentResponse(validated) {
-  return {
-    output: {
-      message: safeTrim(validated.message),
-      questions: normalizeQuestions(validated.questions)
-    },
-    blueprint_patch: null
-  };
-}
-
-function normalizeBuildResponse(validated) {
-  return {
-    output: {
-      blocks: normalizeBlocks(validated.blocks)
-    }
-  };
-}
-
-// ============================================================
-// JSON envelope builder
-// ============================================================
-
-function buildJsonEnvelope({
-  stage,
-  status,
-  output,
-  meta,
-  blueprint_patch = null,
-  error = null
-}) {
-  return {
-    stage,
-    status,
-    output,
-    meta,
-    blueprint_patch,
-    error
-  };
-}
-
-function buildErrorEnvelope({ stage, code, message }) {
-  return buildJsonEnvelope({
-    stage,
-    status: STATUSES.ERROR,
-    output: null,
-    meta: {
-      route_decisions_returned: false
-    },
-    blueprint_patch: null,
-    error: {
-      code,
-      message
-    }
-  });
-}
-
-function buildMeta(surfaceRequest, extras = {}) {
-  return {
-    language: surfaceRequest?.language || "ru",
-    patch_policy: PATCH_POLICY[surfaceRequest?.stage] || false,
-    route_decisions_returned: false,
-    model: MODEL,
-    ...extras
-  };
-}
-
-// ============================================================
-// Patch discipline
-// ============================================================
-
-function sanitizePatchByPolicy(rawPatch, surface) {
-  if (!isPlainObject(rawPatch)) {
-    return {};
-  }
-
-  rejectForbiddenRouteKeys(rawPatch);
-
-  const flatPatch = flattenPatchObject(rawPatch);
-  const sanitized = {};
-
-  for (const [path, value] of Object.entries(flatPatch)) {
-    if (!isAllowedPatchPath(path, surface)) continue;
-    if (isForbiddenSystemPath(path)) continue;
-    sanitized[path] = sanitizePatchValue(value);
-  }
-
-  return sanitized;
-}
-
-function isAllowedPatchPath(path, surface) {
-  if (surface === EXECUTION_SURFACES.SELECTION) {
-    return SELECTION_ALLOWED_PATCH_PATHS.has(path);
-  }
-
-  if (surface === EXECUTION_SURFACES.REFINEMENT) {
-    return REFINEMENT_ALLOWED_PATCH_PATHS.has(path);
-  }
-
-  if (surface === EXECUTION_SURFACES.ALIGNMENT) {
-    return ALIGNMENT_ALLOWED_PATCH_PATHS.has(path);
-  }
-
-  return false;
-}
-
-function isForbiddenSystemPath(path) {
-  return (
-    path.startsWith("system_state.") ||
-    path === "meta" ||
-    path === "system_state" ||
-    path.startsWith("meta.") ||
-    path === "ready_for_final_assembly" ||
-    path === "required_inputs_complete" ||
-    path === "minimum_usable_readiness" ||
-    path.startsWith("extensions.") ||
-    path.startsWith("participants.") ||
-    path.startsWith("environment.") ||
-    path.startsWith("technical_layer.") ||
-    path.startsWith("marketing_layer.")
-  );
-}
-
-function sanitizePatchValue(value) {
-  if (Array.isArray(value)) {
-    return value
-      .map((item) => (typeof item === "string" ? item.trim() : item))
-      .filter((item) => item !== "" && item != null);
-  }
-
-  if (typeof value === "string") {
-    return value.trim();
-  }
-
-  return value;
-}
-
-// ============================================================
-// Helpers for ideas / questions / blocks / selection
-// ============================================================
-
-function normalizeSceneIdea(item) {
-  if (!isPlainObject(item)) return null;
-
-  const slot = normalizeSceneIdeaSlot(item.slot);
-  const title = safeTrim(item.title);
-  const seedScene = safeTrim(item.seed_scene);
-  const whyItFits = safeTrim(item.why_it_fits);
-
-  if (!slot || !title || !seedScene) return null;
-
-  return {
-    slot,
-    title,
-    seed_scene: seedScene,
-    why_it_fits: whyItFits
-  };
-}
-
-function normalizeSceneIdeaSlot(value) {
-  const slot = String(value || "").trim().toLowerCase();
-  if (slot === "precise" || slot === "variation" || slot === "creative") {
-    return slot;
-  }
-  return null;
-}
-
-function enforceSceneIdeaSlots(ideas, language) {
-  const map = new Map();
-  for (const idea of ideas) {
-    if (!map.has(idea.slot)) {
-      map.set(idea.slot, idea);
-    }
-  }
-
-  const requiredSlots = ["precise", "variation", "creative"];
-  return requiredSlots.map((slot) => {
-    if (map.has(slot)) return map.get(slot);
-
-    return {
-      slot,
-      title: fallbackSceneIdeaTitle(slot, language),
-      seed_scene: "",
-      why_it_fits: ""
-    };
-  });
-}
-
-function fallbackSceneIdeaTitle(slot, language) {
-  const titles = language === "en"
-    ? {
-        precise: "Precise direction",
-        variation: "Variation",
-        creative: "Creative interpretation"
-      }
-    : {
-        precise: "Точное направление",
-        variation: "Вариация",
-        creative: "Креативная трактовка"
-      };
-
-  return titles[slot] || slot;
-}
-
-function normalizeQuestions(value) {
-  if (!Array.isArray(value)) return [];
-  return value
-    .map((item) => safeTrim(item))
-    .filter(Boolean)
-    .slice(0, 3);
-}
-
-function normalizeBlocks(blocks) {
-  const next = {};
-  for (const [key, value] of Object.entries(ensureObject(blocks))) {
-    if (typeof value !== "string") continue;
-    const trimmed = value.trim();
-    if (!trimmed) continue;
-    next[key] = trimmed;
-  }
-  return next;
-}
-
-function extractSelectedScene(userInput) {
-  if (!isPlainObject(userInput)) {
-    return "";
-  }
-
-  if (typeof userInput.seed_scene !== "string") {
-    return "";
-  }
-
-  return userInput.seed_scene.trim();
-}
-
-function buildBuildSchemaPrompt(resultSchema, language) {
-  const allowedBlocks = Array.isArray(resultSchema.blocks)
-    ? resultSchema.blocks
-    : [];
-  const forbiddenBlocks = BUILD_BLOCK_CATALOG.filter(
-    (block) => !allowedBlocks.includes(block)
-  );
-  const compositionLines = allowedBlocks.map((block, index) => {
-    const budget = resultSchema.block_character_budget[block];
-    if (typeof budget === "number" && budget > 0) {
-      return `${index + 1}. ${block} — target_char_budget=${budget}`;
-    }
-    return `${index + 1}. ${block}`;
-  });
-
-  if (language === "en") {
-    return [
-      "Build schema contract:",
-      `- version: ${resultSchema.version}`,
-      `- plan_tier: ${resultSchema.plan_tier}`,
-      `- video_type: ${resultSchema.video_type}`,
-      `- density_mode: ${resultSchema.density_mode}`,
-      `- text_budget_total: ${resultSchema.text_budget_total}`,
-      `- allowed_blocks: ${allowedBlocks.join(", ") || "none"}`,
-      `- forbidden_blocks: ${forbiddenBlocks.join(", ") || "none"}`,
-      "- expected_result_composition:",
-      ...compositionLines,
-      "- Return blocks only under output.blocks.",
-      "- Do not add blocks outside allowed_blocks.",
-      "- If a block is not allowed, omit it completely."
-    ].join("\n");
-  }
-
-  return [
-    "Контракт build schema:",
-    `- version: ${resultSchema.version}`,
-    `- plan_tier: ${resultSchema.plan_tier}`,
-    `- video_type: ${resultSchema.video_type}`,
-    `- density_mode: ${resultSchema.density_mode}`,
-    `- text_budget_total: ${resultSchema.text_budget_total}`,
-    `- allowed_blocks: ${allowedBlocks.join(", ") || "none"}`,
-    `- forbidden_blocks: ${forbiddenBlocks.join(", ") || "none"}`,
-    "- expected_result_composition:",
-    ...compositionLines,
-    "- Возвращай блоки только внутри output.blocks.",
-    "- Не добавляй блоки вне allowed_blocks.",
-    "- Если блок не разрешён, полностью пропусти его."
-  ].join("\n");
-}
-
-// ============================================================
-// Validation guards against route behavior
-// ============================================================
-
-function rejectForbiddenRouteKeys(obj) {
-  const paths = collectObjectPaths(obj);
-
-  for (const path of paths) {
-    const last = path.split(".").pop();
-    if (FORBIDDEN_ROUTE_KEYS.has(last)) {
-      throw new Error(`Forbidden route key returned by model: ${path}`);
-    }
-  }
-}
-
-function collectObjectPaths(obj, prefix = "") {
-  if (!isPlainObject(obj) && !Array.isArray(obj)) return [];
-  const paths = [];
-
-  if (Array.isArray(obj)) {
-    for (let i = 0; i < obj.length; i += 1) {
-      const nextPrefix = prefix ? `${prefix}.${i}` : String(i);
-      paths.push(nextPrefix);
-      paths.push(...collectObjectPaths(obj[i], nextPrefix));
-    }
-    return paths;
-  }
-
-  for (const [key, value] of Object.entries(obj)) {
-    const nextPrefix = prefix ? `${prefix}.${key}` : key;
-    paths.push(nextPrefix);
-    paths.push(...collectObjectPaths(value, nextPrefix));
-  }
-
-  return paths;
-}
-
-// ============================================================
-// Low-level utils
-// ============================================================
-
-function safeParseBody(body) {
-  if (!body) return {};
-
-  if (typeof body === "string") {
-    try {
-      return JSON.parse(body);
-    } catch (_) {
-      return {};
-    }
-  }
-
-  return body;
-}
-
-function applyCors(res) {
+module.exports = async (req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-}
 
-function sendJson(res, code, payload) {
-  return res.status(code).json(payload);
-}
+  if (req.method === "OPTIONS") return res.status(200).end();
+  if (req.method !== "POST") return json(res, 405, { error: "Method not allowed" });
 
-function getLanguageInstruction(language) {
-  return language === "en"
-    ? "Respond only in English."
-    : "Отвечай только на русском языке.";
-}
+  try {
+    const body = safeParseBody(req);
+    const payload = body.payload || {};
+    const action = normalizeAction(body.action);
+    const blueprint = action === "REFINEMENT"
+      ? ensureRefinementBlueprintIntegrity(body.blueprint || payload.blueprint || {})
+      : (body.blueprint || payload.blueprint || {});
+    const uiInputs = body.uiInputs || payload.uiInputs || {};
+    const resultSchema = body.resultSchema || payload.resultSchema || {};
+    const userMessage = typeof body.userMessage === "string"
+      ? body.userMessage.trim()
+      : (typeof payload.userMessage === "string" ? payload.userMessage.trim() : "");
+    const language = blueprint?.meta?.language || body.language || payload.language || "ru";
 
-function compact(value) {
-  return JSON.stringify(value ?? {}, null, 2);
-}
-
-function safeTrim(value) {
-  return typeof value === "string" ? value.trim() : "";
-}
-
-function ensureObject(value) {
-  return isPlainObject(value) ? value : {};
-}
-
-function isPlainObject(value) {
-  return !!value && typeof value === "object" && !Array.isArray(value);
-}
-
-function flattenPatchObject(obj, prefix = "") {
-  const result = {};
-
-  for (const [key, value] of Object.entries(ensureObject(obj))) {
-    const nextPath = prefix ? `${prefix}.${key}` : key;
-
-    if (isPlainObject(value)) {
-      Object.assign(result, flattenPatchObject(value, nextPath));
-    } else {
-      result[nextPath] = value;
+    if (!process.env.OPENAI_API_KEY) {
+      return json(res, 500, { error: "Missing OPENAI_API_KEY" });
     }
-  }
 
-  return result;
-}
+    const refinementInput = action === "REFINEMENT"
+      ? {
+          userMessage,
+          inputMode: typeof body.inputMode === 'string'
+            ? body.inputMode
+            : (typeof payload.inputMode === 'string' ? payload.inputMode : ''),
+          structuredChoice: (body.structuredChoice && typeof body.structuredChoice === 'object')
+            ? body.structuredChoice
+            : ((payload.structuredChoice && typeof payload.structuredChoice === 'object') ? payload.structuredChoice : null),
+          language
+        }
+      : null;
+
+    let input;
+
+    if (action === "SCENE_IDEAS") {
+      input = buildSceneIdeasInput({ blueprint, uiInputs, language });
+    } else if (action === "REFINEMENT") {
+      if (!userMessage) {
+        return json(res, 400, { error: "Missing userMessage for REFINEMENT" });
+      }
+      if (!blueprint?.scene_core?.seed_scene || !String(blueprint.scene_core.seed_scene).trim()) {
+        return json(res, 400, { error: "Missing scene_core.seed_scene for REFINEMENT", recovered: false });
+      }
+      input = buildRefinementInput({ blueprint, userMessage, language });
+    } else if (action === "FINAL_ASSEMBLY") {
+      input = buildFinalAssemblyInput({ blueprint, resultSchema, language });
+    } else if (action === "POST_CHAT") {
+      if (!userMessage) {
+        return json(res, 400, { error: "Missing userMessage for POST_CHAT" });
+      }
+      input = buildPostChatInput({
+        blueprint,
+        deliverableBlocks: body.deliverableBlocks || payload.deliverableBlocks || {},
+        userMessage,
+        language
+      });
+    } else {
+      return json(res, 400, {
+        error: "Unsupported action",
+        supported_actions: ["SCENE_IDEAS", "REFINEMENT", "FINAL_ASSEMBLY", "POST_CHAT"]
+      });
+    }
+
+    const { parsed, raw } = await callOpenAI(input);
+    let normalizedParsed = action === "REFINEMENT"
+      ? normalizeRefinementResult(parsed, blueprint?.system_state?.current_stage, blueprint, refinementInput || { userMessage, language })
+      : (action === "POST_CHAT"
+          ? normalizePostChatResult(parsed, userMessage, body.deliverableBlocks || payload.deliverableBlocks || {}, language)
+          : parsed);
+
+    if (action === "POST_CHAT") {
+      normalizedParsed = await repairPostChatExecutionIfNeeded(
+        normalizedParsed,
+        body.deliverableBlocks || payload.deliverableBlocks || {},
+        userMessage,
+        language
+      );
+    }
+
+    if (action === "SCENE_IDEAS") {
+      return json(res, 200, {
+        ok: true,
+        action,
+        ideas: Array.isArray(parsed.ideas) ? parsed.ideas : [],
+        data: parsed,
+        raw,
+        trace: buildServerTrace({ blueprint, action, parsed, normalizedParsed: parsed })
+      });
+    }
+
+    return json(res, 200, {
+      ok: true,
+      action,
+      data: normalizedParsed,
+      raw,
+      trace: buildServerTrace({ blueprint, action, parsed, normalizedParsed })
+    });
+  } catch (err) {
+    return json(res, 500, {
+      error: "script-v2 failed",
+      details: err?.message || String(err)
+    });
+  }
+};

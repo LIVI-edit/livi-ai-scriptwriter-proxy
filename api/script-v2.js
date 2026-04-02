@@ -229,7 +229,7 @@ async function executeRefinement(surfaceRequest) {
 
   const modelInput = buildRefinementInput(surfaceRequest);
   const modelRaw = await callModel(modelInput);
-  const validated = validateRefinementResponse(modelRaw);
+  const validated = validateRefinementResponse(modelRaw, surfaceRequest);
   const normalized = normalizeRefinementResponse(validated);
 
   return buildJsonEnvelope({
@@ -458,7 +458,8 @@ function buildRefinementInput(surfaceRequest) {
         {
           type: "input_text",
           text:
-            `${getLanguageInstruction(lang)}\n` +
+            `${getLanguageInstruction(lang)}
+` +
             (lang === "en"
               ? [
                   "You work only for the current stage: refinement.",
@@ -466,7 +467,11 @@ function buildRefinementInput(surfaceRequest) {
                   "No route decisions.",
                   "No readiness logic.",
                   "Return only current-stage output.",
-                  "Output fields: message, questions, patch.",
+                  "Required response shape:",
+                  '{ "message": "short current-stage message", "questions": ["...optional"], "patch": { ...optional } }',
+                  "message must be a non-empty string.",
+                  "questions are optional and must be an array if present.",
+                  "patch is optional and must be an object if present.",
                   "Questions must be short, concrete and current-stage only.",
                   "Allowed patch paths only:",
                   "- goal.video_topic",
@@ -478,14 +483,19 @@ function buildRefinementInput(surfaceRequest) {
                   "Do not return any other blueprint patch paths.",
                   "Do not return conditional sections.",
                   "No markdown."
-                ].join("\n")
+                ].join("
+")
               : [
                   "Ты работаешь только для текущего этапа: refinement.",
                   "Верни только JSON.",
                   "Без route decisions.",
                   "Без readiness logic.",
                   "Верни только output текущего этапа.",
-                  "Поля output: message, questions, patch.",
+                  "Обязательная форма ответа:",
+                  '{ "message": "короткое сообщение текущего этапа", "questions": ["...optional"], "patch": { ...optional } }',
+                  "message — обязательная непустая строка.",
+                  "questions — опциональный массив, если он присутствует.",
+                  "patch — опциональный объект, если он присутствует.",
                   "Вопросы должны быть короткими, конкретными и только по текущему этапу.",
                   "Разрешённые patch paths только:",
                   "- goal.video_topic",
@@ -497,7 +507,8 @@ function buildRefinementInput(surfaceRequest) {
                   "Не возвращай никакие другие blueprint patch paths.",
                   "Не возвращай conditional sections.",
                   "Без markdown."
-                ].join("\n"))
+                ].join("
+"))
         }
       ]
     },
@@ -507,9 +518,16 @@ function buildRefinementInput(surfaceRequest) {
         {
           type: "input_text",
           text:
-            `Blueprint:\n${compact(surfaceRequest.blueprint)}\n\n` +
-            `User input:\n${compact(surfaceRequest.user_input)}\n\n` +
-            `Advanced options:\n${compact(surfaceRequest.advanced_options)}`
+            `Blueprint:
+${compact(surfaceRequest.blueprint)}
+
+` +
+            `User input:
+${compact(surfaceRequest.user_input)}
+
+` +
+            `Advanced options:
+${compact(surfaceRequest.advanced_options)}`
         }
       ]
     }
@@ -717,11 +735,13 @@ function validateSelectionResponse(modelRaw) {
   return data;
 }
 
-function validateRefinementResponse(modelRaw) {
+function validateRefinementResponse(modelRaw, surfaceRequest) {
   const data = validateBaseModelObject(modelRaw, STAGES.REFINEMENT);
 
   if (typeof data.message !== "string" || !data.message.trim()) {
-    throw new Error("refinement model response must contain message");
+    data.message = surfaceRequest?.language === "en"
+      ? "Got it. I’m refining the scene and preparing the next step."
+      : "Принято. Я уточняю сцену и подготавливаю следующий шаг.";
   }
 
   if (data.questions != null && !Array.isArray(data.questions)) {

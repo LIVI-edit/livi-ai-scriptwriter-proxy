@@ -211,7 +211,7 @@ async function executeSelection(surfaceRequest) {
 
   const modelInput = buildSelectionInput(surfaceRequest);
   const modelRaw = await callModel(modelInput);
-  const validated = validateSelectionResponse(modelRaw, surfaceRequest);
+  const validated = validateSelectionResponse(modelRaw);
   const normalized = normalizeSelectionResponse(validated, surfaceRequest);
 
   return buildJsonEnvelope({
@@ -405,8 +405,7 @@ function buildSelectionInput(surfaceRequest) {
                   "- scene_core.seed_scene",
                   "Do not return any other blueprint patch fields.",
                   "No markdown."
-                ].join("
-")
+                ].join("\n")
               : [
                   "Ты работаешь только для текущего этапа: selection.",
                   "Selection не даёт ownership над маршрутом.",
@@ -420,8 +419,7 @@ function buildSelectionInput(surfaceRequest) {
                   "- scene_core.seed_scene",
                   "Не возвращай никакие другие blueprint patch fields.",
                   "Без markdown."
-                ].join("
-"))
+                ].join("\n"))
         }
       ]
     },
@@ -450,7 +448,6 @@ ${compact(surfaceRequest.advanced_options)}`
     }
   ];
 }
-
 function buildRefinementInput(surfaceRequest) {
   const lang = surfaceRequest.language;
 
@@ -706,18 +703,11 @@ function validateSceneIdeasResponse(modelRaw) {
   return data;
 }
 
-function validateSelectionResponse(modelRaw, surfaceRequest) {
+function validateSelectionResponse(modelRaw) {
   const data = validateBaseModelObject(modelRaw, STAGES.SELECTION);
-  const selectedScene = extractSelectedScene(surfaceRequest?.user_input);
 
   if (typeof data.message !== "string" || !data.message.trim()) {
-    if (!selectedScene) {
-      throw new Error("selection model response must contain message");
-    }
-
-    data.message = surfaceRequest?.language === "en"
-      ? "Got it. I’ll build the next step from this selected scene."
-      : "Принято. Дальше я строю следующий шаг от этой выбранной сцены.";
+    throw new Error("selection model response must contain message");
   }
 
   if (data.patch != null && !isPlainObject(data.patch)) {

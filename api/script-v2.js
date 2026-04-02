@@ -229,7 +229,7 @@ async function executeRefinement(surfaceRequest) {
 
   const modelInput = buildRefinementInput(surfaceRequest);
   const modelRaw = await callModel(modelInput);
-  const validated = validateRefinementResponse(modelRaw, surfaceRequest.language);
+  const validated = validateRefinementResponse(modelRaw);
   const normalized = normalizeRefinementResponse(validated);
 
   return buildJsonEnvelope({
@@ -247,7 +247,7 @@ async function executeAlignment(surfaceRequest) {
 
   const modelInput = buildAlignmentInput(surfaceRequest);
   const modelRaw = await callModel(modelInput);
-  const validated = validateAlignmentResponse(modelRaw, surfaceRequest.language);
+  const validated = validateAlignmentResponse(modelRaw);
   const normalized = normalizeAlignmentResponse(validated);
 
   return buildJsonEnvelope({
@@ -450,6 +450,17 @@ ${compact(surfaceRequest.advanced_options)}`
 }
 function buildRefinementInput(surfaceRequest) {
   const lang = surfaceRequest.language;
+  const refinementFieldValues = [
+    ["goal.video_topic", surfaceRequest.blueprint?.goal?.video_topic],
+    ["goal.video_goal", surfaceRequest.blueprint?.goal?.video_goal],
+    ["scene_core.seed_scene", surfaceRequest.blueprint?.scene_core?.seed_scene],
+    ["narrative.scene_setup", surfaceRequest.blueprint?.narrative?.scene_setup],
+    ["narrative.scene_development", surfaceRequest.blueprint?.narrative?.scene_development],
+    ["visual_direction.emotion", surfaceRequest.blueprint?.visual_direction?.emotion]
+  ];
+  const missingRefinementFields = refinementFieldValues
+    .filter(([, value]) => !safeTrim(value))
+    .map(([path]) => path);
 
   return [
     {
@@ -469,6 +480,12 @@ function buildRefinementInput(surfaceRequest) {
                   "Output fields: message, questions, patch.",
                   'Required JSON shape: { "message": "short current-stage message", "questions": [], "patch": {} }',
                   "message must always be present as a non-empty string.",
+                  "Analyze the current Blueprint before asking questions.",
+                  "Ask questions only for allowed patch fields that are still missing or empty.",
+                  "Do not repeat questions for fields already filled in the Blueprint.",
+                  "If the current user_input is enough, return patch immediately.",
+                  "If the current input can close missing admission-critical fields, keep questions empty or minimal and return the fullest valid patch.",
+                  "Prioritize closing: narrative.scene_setup, narrative.scene_development, visual_direction.emotion.",
                   "Questions must be short, concrete and current-stage only.",
                   "Allowed patch paths only:",
                   "- goal.video_topic",
@@ -490,6 +507,12 @@ function buildRefinementInput(surfaceRequest) {
                   "Поля output: message, questions, patch.",
                   'Обязательная JSON-форма: { "message": "короткое сообщение текущего этапа", "questions": [], "patch": {} }',
                   "message должен присутствовать всегда и быть непустой строкой.",
+                  "Сначала анализируй текущий Blueprint перед тем как задавать вопросы.",
+                  "Задавай вопросы только по разрешённым patch-полям, которые реально пустые или отсутствуют.",
+                  "Не повторяй вопросы по полям, которые уже заполнены в Blueprint.",
+                  "Если из текущего user_input уже достаточно данных, сразу верни patch.",
+                  "Если текущий ввод позволяет закрыть missing admission-critical fields, questions должны быть пустыми или минимальными, а patch — максимально полным.",
+                  "В первую очередь стремись закрыть: narrative.scene_setup, narrative.scene_development, visual_direction.emotion.",
                   "Вопросы должны быть короткими, конкретными и только по текущему этапу.",
                   "Разрешённые patch paths только:",
                   "- goal.video_topic",
@@ -512,6 +535,7 @@ function buildRefinementInput(surfaceRequest) {
           type: "input_text",
           text:
             `Blueprint:\n${compact(surfaceRequest.blueprint)}\n\n` +
+            `Missing allowed refinement fields:\n${compact(missingRefinementFields)}\n\n` +
             `User input:\n${compact(surfaceRequest.user_input)}\n\n` +
             `Advanced options:\n${compact(surfaceRequest.advanced_options)}`
         }
@@ -538,8 +562,6 @@ function buildAlignmentInput(surfaceRequest) {
                   "No route decisions.",
                   "No build admission.",
                   "Return a short alignment-supporting message.",
-                  'Required JSON shape: { "message": "short alignment-supporting message" }',
-                  "message must be a non-empty string.",
                   "Do not return blueprint patch.",
                   "Do not open new branches.",
                   "Do not ask broad new questions.",
@@ -551,8 +573,6 @@ function buildAlignmentInput(surfaceRequest) {
                   "Без route decisions.",
                   "Без build admission.",
                   "Верни короткое alignment-supporting сообщение.",
-                  'Обязательная JSON-форма: { "message": "короткое alignment-supporting сообщение" }',
-                  "message должен быть непустой строкой.",
                   "Не возвращай blueprint patch.",
                   "Не открывай новые ветки.",
                   "Не задавай широких новых вопросов.",
@@ -725,8 +745,12 @@ function validateSelectionResponse(modelRaw) {
   return data;
 }
 
-function validateRefinementResponse(modelRaw, language = "ru") {
+function validateRefinementResponse(modelRaw) {
   const data = validateBaseModelObject(modelRaw, STAGES.REFINEMENT);
+
+  if (typeof data.message !== "string" || !data.message.trim()) {
+    throw new Error("refinement model response must contain message");
+  }
 
   if (data.questions != null && !Array.isArray(data.questions)) {
     throw new Error("refinement questions must be an array");
@@ -736,26 +760,15 @@ function validateRefinementResponse(modelRaw, language = "ru") {
     throw new Error("refinement patch must be an object");
   }
 
-  if (typeof data.message !== "string" || !data.message.trim()) {
-    const hasQuestions = Array.isArray(data.questions)
-      && data.questions.some((item) => !!safeTrim(item));
-    const hasPatch = isPlainObject(data.patch)
-      && Object.keys(data.patch).length > 0;
-
-    if (hasQuestions || hasPatch) {
-      data.message = language === "en"
-        ? "Got it. I’ll refine the next step from your input."
-        : "Принято. Я уточняю следующий шаг по твоему вводу.";
-    } else {
-      throw new Error("refinement model response must contain message");
-    }
-  }
-
   return data;
 }
 
-function validateAlignmentResponse(modelRaw, language = "ru") {
+function validateAlignmentResponse(modelRaw) {
   const data = validateBaseModelObject(modelRaw, STAGES.ALIGNMENT);
+
+  if (typeof data.message !== "string" || !data.message.trim()) {
+    throw new Error("alignment model response must contain message");
+  }
 
   if (data.questions != null && !Array.isArray(data.questions)) {
     throw new Error("alignment questions must be an array");
@@ -763,12 +776,6 @@ function validateAlignmentResponse(modelRaw, language = "ru") {
 
   if (data.patch != null && !isPlainObject(data.patch)) {
     throw new Error("alignment patch must be an object");
-  }
-
-  if (typeof data.message !== "string" || !data.message.trim()) {
-    data.message = language === "en"
-      ? "Got it. I’ll align the final direction from the current state."
-      : "Принято. Я выравниваю финальное направление из текущего состояния.";
   }
 
   return data;

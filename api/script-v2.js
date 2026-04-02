@@ -211,7 +211,7 @@ async function executeSelection(surfaceRequest) {
 
   const modelInput = buildSelectionInput(surfaceRequest);
   const modelRaw = await callModel(modelInput);
-  const validated = validateSelectionResponse(modelRaw);
+  const validated = validateSelectionResponse(modelRaw, surfaceRequest);
   const normalized = normalizeSelectionResponse(validated, surfaceRequest);
 
   return buildJsonEnvelope({
@@ -389,30 +389,39 @@ function buildSelectionInput(surfaceRequest) {
         {
           type: "input_text",
           text:
-            `${getLanguageInstruction(lang)}\n` +
+            `${getLanguageInstruction(lang)}
+` +
             (lang === "en"
               ? [
                   "You work only for the current stage: selection.",
                   "Selection is not route ownership.",
                   "Return JSON only.",
                   "No route decisions.",
+                  "Required response shape:",
+                  '{ "message": "short current-stage message", "patch": { ...optional } }',
+                  "message must be a non-empty string.",
+                  "patch is optional and must be an object if present.",
                   "Allowed patch path only:",
                   "- scene_core.seed_scene",
                   "Do not return any other blueprint patch fields.",
-                  "Return a short current-stage message.",
                   "No markdown."
-                ].join("\n")
+                ].join("
+")
               : [
                   "Ты работаешь только для текущего этапа: selection.",
                   "Selection не даёт ownership над маршрутом.",
                   "Верни только JSON.",
                   "Без route decisions.",
+                  "Обязательная форма ответа:",
+                  '{ "message": "короткое сообщение текущего этапа", "patch": { ...optional } }',
+                  "message — обязательная непустая строка.",
+                  "patch — опциональный объект, если он присутствует.",
                   "Разрешённый patch path только:",
                   "- scene_core.seed_scene",
                   "Не возвращай никакие другие blueprint patch fields.",
-                  "Верни короткое сообщение только для текущего этапа.",
                   "Без markdown."
-                ].join("\n"))
+                ].join("
+"))
         }
       ]
     },
@@ -422,10 +431,20 @@ function buildSelectionInput(surfaceRequest) {
         {
           type: "input_text",
           text:
-            `Blueprint:\n${compact(surfaceRequest.blueprint)}\n\n` +
-            `Selected scene content:\n${selectedScene}\n\n` +
-            `User input:\n${compact(surfaceRequest.user_input)}\n\n` +
-            `Advanced options:\n${compact(surfaceRequest.advanced_options)}`
+            `Blueprint:
+${compact(surfaceRequest.blueprint)}
+
+` +
+            `Selected scene content:
+${selectedScene}
+
+` +
+            `User input:
+${compact(surfaceRequest.user_input)}
+
+` +
+            `Advanced options:
+${compact(surfaceRequest.advanced_options)}`
         }
       ]
     }
@@ -687,11 +706,18 @@ function validateSceneIdeasResponse(modelRaw) {
   return data;
 }
 
-function validateSelectionResponse(modelRaw) {
+function validateSelectionResponse(modelRaw, surfaceRequest) {
   const data = validateBaseModelObject(modelRaw, STAGES.SELECTION);
+  const selectedScene = extractSelectedScene(surfaceRequest?.user_input);
 
   if (typeof data.message !== "string" || !data.message.trim()) {
-    throw new Error("selection model response must contain message");
+    if (!selectedScene) {
+      throw new Error("selection model response must contain message");
+    }
+
+    data.message = surfaceRequest?.language === "en"
+      ? "Got it. I’ll build the next step from this selected scene."
+      : "Принято. Дальше я строю следующий шаг от этой выбранной сцены.";
   }
 
   if (data.patch != null && !isPlainObject(data.patch)) {

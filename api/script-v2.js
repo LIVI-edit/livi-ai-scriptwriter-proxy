@@ -247,7 +247,7 @@ async function executeAlignment(surfaceRequest) {
 
   const modelInput = buildAlignmentInput(surfaceRequest);
   const modelRaw = await callModel(modelInput);
-  const validated = validateAlignmentResponse(modelRaw, surfaceRequest.language);
+  const validated = validateAlignmentResponse(modelRaw);
   const normalized = normalizeAlignmentResponse(validated);
 
   return buildJsonEnvelope({
@@ -562,8 +562,6 @@ function buildAlignmentInput(surfaceRequest) {
                   "No route decisions.",
                   "No build admission.",
                   "Return a short alignment-supporting message.",
-                  'Required JSON shape: { "message": "short alignment-supporting message" }',
-                  "message must be a non-empty string.",
                   "Do not return blueprint patch.",
                   "Do not open new branches.",
                   "Do not ask broad new questions.",
@@ -575,8 +573,6 @@ function buildAlignmentInput(surfaceRequest) {
                   "Без route decisions.",
                   "Без build admission.",
                   "Верни короткое alignment-supporting сообщение.",
-                  'Обязательная JSON-форма: { "message": "короткое alignment-supporting сообщение" }',
-                  "message должен быть непустой строкой.",
                   "Не возвращай blueprint patch.",
                   "Не открывай новые ветки.",
                   "Не задавай широких новых вопросов.",
@@ -767,8 +763,12 @@ function validateRefinementResponse(modelRaw) {
   return data;
 }
 
-function validateAlignmentResponse(modelRaw, language = "ru") {
+function validateAlignmentResponse(modelRaw) {
   const data = validateBaseModelObject(modelRaw, STAGES.ALIGNMENT);
+
+  if (typeof data.message !== "string" || !data.message.trim()) {
+    throw new Error("alignment model response must contain message");
+  }
 
   if (data.questions != null && !Array.isArray(data.questions)) {
     throw new Error("alignment questions must be an array");
@@ -776,12 +776,6 @@ function validateAlignmentResponse(modelRaw, language = "ru") {
 
   if (data.patch != null && !isPlainObject(data.patch)) {
     throw new Error("alignment patch must be an object");
-  }
-
-  if (typeof data.message !== "string" || !data.message.trim()) {
-    data.message = language === "en"
-      ? "Got it. I’ll align the final direction from the current state."
-      : "Принято. Я выравниваю финальное направление из текущего состояния.";
   }
 
   return data;

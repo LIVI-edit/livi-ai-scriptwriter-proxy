@@ -559,6 +559,9 @@ function buildAlignmentInput(surfaceRequest) {
               ? [
                   "You work only for the current stage: alignment.",
                   "Return JSON only.",
+                  "Required JSON shape: { \"message\": \"short alignment-supporting message\" }.",
+                  "The key \"message\" is mandatory.",
+                  "message must be a non-empty string.",
                   "No route decisions.",
                   "No build admission.",
                   "Return a short alignment-supporting message.",
@@ -570,6 +573,9 @@ function buildAlignmentInput(surfaceRequest) {
               : [
                   "Ты работаешь только для текущего этапа: alignment.",
                   "Верни только JSON.",
+                  "Обязательная JSON-форма: { \"message\": \"короткое alignment-supporting сообщение\" }.",
+                  "Ключ \"message\" обязателен.",
+                  "message должен быть непустой строкой.",
                   "Без route decisions.",
                   "Без build admission.",
                   "Верни короткое alignment-supporting сообщение.",
@@ -765,9 +771,10 @@ function validateRefinementResponse(modelRaw) {
 
 function validateAlignmentResponse(modelRaw) {
   const data = validateBaseModelObject(modelRaw, STAGES.ALIGNMENT);
+  const language = detectLanguageFromModelRaw(modelRaw);
 
   if (typeof data.message !== "string" || !data.message.trim()) {
-    throw new Error("alignment model response must contain message");
+    data.message = getAlignmentFallbackMessage(language);
   }
 
   if (data.questions != null && !Array.isArray(data.questions)) {
@@ -1172,6 +1179,22 @@ function collectObjectPaths(obj, prefix = "") {
 // ============================================================
 // Low-level utils
 // ============================================================
+
+function detectLanguageFromModelRaw(modelRaw) {
+  const rawText = String(modelRaw?.raw_text || "").toLowerCase();
+
+  if (rawText.includes("english")) {
+    return "en";
+  }
+
+  return "ru";
+}
+
+function getAlignmentFallbackMessage(language) {
+  return language === "en"
+    ? "Got it. I’ll align the final direction from the current state."
+    : "Принято. Я выравниваю финальное направление из текущего состояния.";
+}
 
 function safeParseBody(body) {
   if (!body) return {};

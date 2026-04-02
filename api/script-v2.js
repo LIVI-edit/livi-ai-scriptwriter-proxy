@@ -229,7 +229,7 @@ async function executeRefinement(surfaceRequest) {
 
   const modelInput = buildRefinementInput(surfaceRequest);
   const modelRaw = await callModel(modelInput);
-  const validated = validateRefinementResponse(modelRaw);
+  const validated = validateRefinementResponse(modelRaw, surfaceRequest.language);
   const normalized = normalizeRefinementResponse(validated);
 
   return buildJsonEnvelope({
@@ -467,6 +467,8 @@ function buildRefinementInput(surfaceRequest) {
                   "No readiness logic.",
                   "Return only current-stage output.",
                   "Output fields: message, questions, patch.",
+                  'Required JSON shape: { "message": "short current-stage message", "questions": [], "patch": {} }',
+                  "message must always be present as a non-empty string.",
                   "Questions must be short, concrete and current-stage only.",
                   "Allowed patch paths only:",
                   "- goal.video_topic",
@@ -486,6 +488,8 @@ function buildRefinementInput(surfaceRequest) {
                   "Без readiness logic.",
                   "Верни только output текущего этапа.",
                   "Поля output: message, questions, patch.",
+                  'Обязательная JSON-форма: { "message": "короткое сообщение текущего этапа", "questions": [], "patch": {} }',
+                  "message должен присутствовать всегда и быть непустой строкой.",
                   "Вопросы должны быть короткими, конкретными и только по текущему этапу.",
                   "Разрешённые patch paths только:",
                   "- goal.video_topic",
@@ -717,12 +721,8 @@ function validateSelectionResponse(modelRaw) {
   return data;
 }
 
-function validateRefinementResponse(modelRaw) {
+function validateRefinementResponse(modelRaw, language = "ru") {
   const data = validateBaseModelObject(modelRaw, STAGES.REFINEMENT);
-
-  if (typeof data.message !== "string" || !data.message.trim()) {
-    throw new Error("refinement model response must contain message");
-  }
 
   if (data.questions != null && !Array.isArray(data.questions)) {
     throw new Error("refinement questions must be an array");
@@ -730,6 +730,21 @@ function validateRefinementResponse(modelRaw) {
 
   if (data.patch != null && !isPlainObject(data.patch)) {
     throw new Error("refinement patch must be an object");
+  }
+
+  if (typeof data.message !== "string" || !data.message.trim()) {
+    const hasQuestions = Array.isArray(data.questions)
+      && data.questions.some((item) => !!safeTrim(item));
+    const hasPatch = isPlainObject(data.patch)
+      && Object.keys(data.patch).length > 0;
+
+    if (hasQuestions || hasPatch) {
+      data.message = language === "en"
+        ? "Got it. I’ll refine the next step from your input."
+        : "Принято. Я уточняю следующий шаг по твоему вводу.";
+    } else {
+      throw new Error("refinement model response must contain message");
+    }
   }
 
   return data;

@@ -381,6 +381,7 @@ function buildSceneIdeasInput(surfaceRequest) {
 function buildSelectionInput(surfaceRequest) {
   const lang = surfaceRequest.language;
   const selectedScene = extractSelectedScene(surfaceRequest.user_input);
+  const selectionGuidance = buildSelectionGuidanceContext(surfaceRequest, selectedScene);
 
   return [
     {
@@ -389,17 +390,21 @@ function buildSelectionInput(surfaceRequest) {
         {
           type: "input_text",
           text:
-            `${getLanguageInstruction(lang)}
-` +
+            `${getLanguageInstruction(lang)}\n` +
             (lang === "en"
               ? [
                   "You work only for the current stage: selection.",
                   "Selection is not route ownership.",
                   "Return JSON only.",
                   "No route decisions.",
+                  "Selection must fix the selected scene and immediately return guided continuation for the current server response.",
                   "Required response shape:",
-                  '{ "message": "short current-stage message", "patch": { ...optional } }',
-                  "message must be a non-empty string.",
+                  '{ "message": "short transition bridge", "questions": ["one next guided question"], "patch": { ...optional } }',
+                  "message must be a non-empty string and must briefly acknowledge the selected scene as the basis for further work.",
+                  "questions must be an array with exactly one short, concrete next question unless no meaningful question is needed.",
+                  "The question must be based on the current Blueprint and the missing guided fields supplied in the user payload.",
+                  "Ask only about information that can affect the next refinement quality.",
+                  "Do not ask for route approval, build permission, or stage transition.",
                   "patch is optional and must be an object if present.",
                   "Allowed patch path only:",
                   "- scene_core.seed_scene",
@@ -411,9 +416,14 @@ function buildSelectionInput(surfaceRequest) {
                   "Selection не даёт ownership над маршрутом.",
                   "Верни только JSON.",
                   "Без route decisions.",
+                  "Selection должен зафиксировать выбранную сцену и сразу вернуть guided continuation в текущем server response.",
                   "Обязательная форма ответа:",
-                  '{ "message": "короткое сообщение текущего этапа", "patch": { ...optional } }',
-                  "message — обязательная непустая строка.",
+                  '{ "message": "короткий transition bridge", "questions": ["один следующий guided question"], "patch": { ...optional } }',
+                  "message — обязательная непустая строка и должен кратко подтвердить выбранную сцену как основу дальнейшей работы.",
+                  "questions — массив ровно с одним коротким конкретным следующим вопросом, если содержательный вопрос ещё нужен.",
+                  "Вопрос должен опираться на текущий Blueprint и missing guided fields из user payload.",
+                  "Спрашивай только о данных, которые влияют на качество следующего refinement.",
+                  "Не спрашивай подтверждение маршрута, разрешение на build или переход этапа.",
                   "patch — опциональный объект, если он присутствует.",
                   "Разрешённый patch path только:",
                   "- scene_core.seed_scene",
@@ -429,20 +439,11 @@ function buildSelectionInput(surfaceRequest) {
         {
           type: "input_text",
           text:
-            `Blueprint:
-${compact(surfaceRequest.blueprint)}
-
-` +
-            `Selected scene content:
-${selectedScene}
-
-` +
-            `User input:
-${compact(surfaceRequest.user_input)}
-
-` +
-            `Advanced options:
-${compact(surfaceRequest.advanced_options)}`
+            `Blueprint:\n${compact(surfaceRequest.blueprint)}\n\n` +
+            `Selected scene content:\n${selectedScene}\n\n` +
+            `Selection guidance context:\n${compact(selectionGuidance)}\n\n` +
+            `User input:\n${compact(surfaceRequest.user_input)}\n\n` +
+            `Advanced options:\n${compact(surfaceRequest.advanced_options)}`
         }
       ]
     }
@@ -744,6 +745,10 @@ function validateSelectionResponse(modelRaw) {
     throw new Error("selection model response must contain message");
   }
 
+  if (!Array.isArray(data.questions)) {
+    throw new Error("selection model response must contain questions array");
+  }
+
   if (data.patch != null && !isPlainObject(data.patch)) {
     throw new Error("selection patch must be an object");
   }
@@ -831,11 +836,15 @@ function normalizeSceneIdeasResponse(validated, surfaceRequest) {
 
 function normalizeSelectionResponse(validated, surfaceRequest) {
   const selectedScene = extractSelectedScene(surfaceRequest.user_input);
+  const normalizedQuestions = normalizeQuestions(validated.questions);
+  const questions = normalizedQuestions.length
+    ? normalizedQuestions.slice(0, 1)
+    : buildSelectionFallbackQuestions(surfaceRequest, selectedScene);
 
   return {
     output: {
       message: safeTrim(validated.message),
-      questions: []
+      questions
     },
     blueprint_patch: selectedScene
       ? { "scene_core.seed_scene": selectedScene }
@@ -994,6 +1003,80 @@ function sanitizePatchValue(value) {
 // ============================================================
 // Helpers for ideas / questions / blocks / selection
 // ============================================================
+
+function buildSelectionGuidanceContext(surfaceRequest, selectedScene) {
+  return {
+    selected_scene: safeTrim(selectedScene),
+    missing_guided_fields: getSelectionMissingGuidedFields(surfaceRequest?.blueprint, selectedScene),
+    allowed_guided_fields: [
+      "narrative.scene_setup",
+      "narrative.scene_development",
+      "visual_direction.emotion"
+    ],
+    patch_boundary: [
+      "scene_core.seed_scene"
+    ]
+  };
+}
+
+function getSelectionMissingGuidedFields(blueprint, selectedScene) {
+  const effectiveSeedScene = safeTrim(selectedScene) || safeTrim(blueprint?.scene_core?.seed_scene);
+  const fieldValues = [
+    ["narrative.scene_setup", blueprint?.narrative?.scene_setup],
+    ["narrative.scene_development", blueprint?.narrative?.scene_development],
+    ["visual_direction.emotion", blueprint?.visual_direction?.emotion]
+  ];
+
+  const missing = fieldValues
+    .filter(([, value]) => !safeTrim(value))
+    .map(([path]) => path);
+
+  if (!effectiveSeedScene) {
+    missing.unshift("scene_core.seed_scene");
+  }
+
+  return missing;
+}
+
+function buildSelectionFallbackQuestions(surfaceRequest, selectedScene) {
+  const language = surfaceRequest?.language || "ru";
+  const missing = getSelectionMissingGuidedFields(surfaceRequest?.blueprint, selectedScene);
+  const nextField = missing.find((path) => path !== "scene_core.seed_scene") || missing[0] || "narrative.scene_development";
+  const question = selectionFallbackQuestionForField(nextField, language);
+  return question ? [question] : [];
+}
+
+function selectionFallbackQuestionForField(fieldPath, language) {
+  const en = language === "en";
+
+  if (fieldPath === "narrative.scene_setup") {
+    return en
+      ? "What should be the opening situation of this scene?"
+      : "С какой ситуации должна начаться эта сцена?";
+  }
+
+  if (fieldPath === "narrative.scene_development") {
+    return en
+      ? "What should change or intensify as this scene develops?"
+      : "Что должно измениться или усилиться по ходу этой сцены?";
+  }
+
+  if (fieldPath === "visual_direction.emotion") {
+    return en
+      ? "What emotion should the scene leave with the viewer?"
+      : "Какое ощущение сцена должна оставить у зрителя?";
+  }
+
+  if (fieldPath === "scene_core.seed_scene") {
+    return en
+      ? "Which scene direction should I develop as the base?"
+      : "Какое направление сцены взять за основу для развития?";
+  }
+
+  return en
+    ? "What is the most important detail I should preserve while developing this scene?"
+    : "Какую самую важную деталь нужно сохранить при развитии этой сцены?";
+}
 
 function normalizeSceneIdea(item) {
   if (!isPlainObject(item)) return null;

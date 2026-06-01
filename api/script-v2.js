@@ -400,17 +400,10 @@ function buildSelectionInput(surfaceRequest) {
                   "Selection must fix the selected scene and immediately return guided continuation for the current server response.",
                   "Required response shape:",
                   '{ "message": "short transition bridge", "questions": ["one next guided question"], "patch": { ...optional } }',
-                  "message must be concise and contain exactly two parts:",
-                  "1) one short sentence confirming the selected scene;",
-                  "2) one short transition phrase explaining what is being clarified now.",
-                  "Keep message under 160 characters if possible.",
-                  "Avoid mechanical or vague wording like 'confirmed as the basis for further work', 'let us develop', or broad creative commentary.",
+                  "message must be a non-empty string and must briefly acknowledge the selected scene as the basis for further work.",
                   "questions must be an array with exactly one short, concrete next question unless no meaningful question is needed.",
                   "The question must be based on the current Blueprint and the missing guided fields supplied in the user payload.",
                   "Ask only about information that can affect the next refinement quality.",
-                  "Write the question for a normal user, not for a developer: do not mention internal field paths, schema names, or labels such as scene_setup, scene_development, visual_direction.emotion, or Blueprint.",
-                  "Do not use form-like phrasing such as 'How do you want to describe...'.",
-                  "Do not write long explanations. Do not start writing the script.",
                   "Do not ask for route approval, build permission, or stage transition.",
                   "patch is optional and must be an object if present.",
                   "Allowed patch path only:",
@@ -426,17 +419,10 @@ function buildSelectionInput(surfaceRequest) {
                   "Selection должен зафиксировать выбранную сцену и сразу вернуть guided continuation в текущем server response.",
                   "Обязательная форма ответа:",
                   '{ "message": "короткий transition bridge", "questions": ["один следующий guided question"], "patch": { ...optional } }',
-                  "message — обязательная непустая строка и должна состоять ровно из двух частей:",
-                  "1) одно короткое предложение, подтверждающее выбранную сцену;",
-                  "2) одна короткая переходная фраза, объясняющая, что сейчас уточняется.",
-                  "По возможности держи message до 160 символов.",
-                  "Избегай механических и размытых формулировок вроде 'подтверждена как основа для дальнейшей работы', 'давайте разработаем' или широких творческих рассуждений.",
+                  "message — обязательная непустая строка и должен кратко подтвердить выбранную сцену как основу дальнейшей работы.",
                   "questions — массив ровно с одним коротким конкретным следующим вопросом, если содержательный вопрос ещё нужен.",
                   "Вопрос должен опираться на текущий Blueprint и missing guided fields из user payload.",
                   "Спрашивай только о данных, которые влияют на качество следующего refinement.",
-                  "Пиши вопрос для обычного пользователя, а не для разработчика: не упоминай внутренние path, schema names и labels вроде scene_setup, scene_development, visual_direction.emotion или Blueprint.",
-                  "Не используй анкетную формулировку 'Как вы хотите описать...'.",
-                  "Не пиши длинные объяснения. Не начинай писать сценарий.",
                   "Не спрашивай подтверждение маршрута, разрешение на build или переход этапа.",
                   "patch — опциональный объект, если он присутствует.",
                   "Разрешённый patch path только:",
@@ -850,16 +836,14 @@ function normalizeSceneIdeasResponse(validated, surfaceRequest) {
 
 function normalizeSelectionResponse(validated, surfaceRequest) {
   const selectedScene = extractSelectedScene(surfaceRequest.user_input);
-  const normalizedQuestions = normalizeQuestions(validated.questions)
-    .map((question) => humanizeSelectionQuestion(question, surfaceRequest.language))
-    .filter(Boolean);
+  const normalizedQuestions = normalizeQuestions(validated.questions);
   const questions = normalizedQuestions.length
     ? normalizedQuestions.slice(0, 1)
     : buildSelectionFallbackQuestions(surfaceRequest, selectedScene);
 
   return {
     output: {
-      message: humanizeSelectionMessage(validated.message),
+      message: safeTrim(validated.message),
       questions
     },
     blueprint_patch: selectedScene
@@ -1062,108 +1046,36 @@ function buildSelectionFallbackQuestions(surfaceRequest, selectedScene) {
   return question ? [question] : [];
 }
 
-function humanizeSelectionMessage(value) {
-  const text = safeTrim(value)
-    .replace(/\s+/g, " ")
-    .replace(/\bconfirmed as the basis for further work\b/gi, "selected")
-    .replace(/\blocked in for further work\b/gi, "selected")
-    .replace(/подтверждена как основа для дальнейшей работы/gi, "выбрана")
-    .replace(/подтвержден как основа для дальнейшей работы/gi, "выбран")
-    .replace(/давайте теперь разработаем/gi, "Теперь уточним")
-    .replace(/давайте разработаем/gi, "Теперь уточним")
-    .trim();
-
-  return limitSentences(limitCharacters(text, 180), 2);
-}
-
-function humanizeSelectionQuestion(value, language) {
-  const en = language === "en";
-  const sceneSetup = en ? "opening situation" : "начало сцены";
-  const sceneDevelopment = en ? "scene development" : "развитие сцены";
-  const emotion = en ? "viewer emotion" : "ощущение у зрителя";
-  const blueprint = en ? "scene" : "сцена";
-
-  const text = safeTrim(value)
-    .replace(/\s+\((?:scene_setup|scene_development|visual_direction\.emotion|narrative\.scene_setup|narrative\.scene_development|Blueprint)\)\s*\??$/gi, "?")
-    .replace(/\s*\[(?:scene_setup|scene_development|visual_direction\.emotion|narrative\.scene_setup|narrative\.scene_development|Blueprint)\]\s*\??$/gi, "?")
-    .replace(/\bscene_setup\b/g, sceneSetup)
-    .replace(/\bscene_development\b/g, sceneDevelopment)
-    .replace(/\bvisual_direction\.emotion\b/g, emotion)
-    .replace(/\bnarrative\.scene_setup\b/g, sceneSetup)
-    .replace(/\bnarrative\.scene_development\b/g, sceneDevelopment)
-    .replace(/\bBlueprint\b/g, blueprint)
-    .replace(/Как вы хотите описать начальную обстановку и настроение сцены\??/gi, "С чего начинается сцена?")
-    .replace(/Как вы хотите описать начало сцены\??/gi, "С чего начинается сцена?")
-    .replace(/Как вы хотите описать развитие сцены\??/gi, "Что меняется по ходу сцены?")
-    .replace(/Как вы хотите описать ощущение у зрителя\??/gi, "Какое ощущение должно остаться у зрителя?")
-    .replace(/How do you want to describe the opening situation and mood of the scene\??/gi, "Where does the scene begin?")
-    .replace(/How do you want to describe the opening situation\??/gi, "Where does the scene begin?")
-    .replace(/How do you want to describe the scene development\??/gi, "What changes as the scene develops?")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  return ensureQuestionMark(limitSentences(limitCharacters(text, 140), 1));
-}
-
-function limitCharacters(value, maxLength) {
-  const text = safeTrim(value);
-  if (!text || text.length <= maxLength) return text;
-
-  const sliced = text.slice(0, maxLength).replace(/[\s,;:–—-]+\S*$/, "").trim();
-  return sliced || text.slice(0, maxLength).trim();
-}
-
-function limitSentences(value, maxSentences) {
-  const text = safeTrim(value);
-  if (!text) return "";
-
-  const matches = text.match(/[^.!?]+[.!?]+|[^.!?]+$/g);
-  if (!matches) return text;
-
-  return matches
-    .slice(0, maxSentences)
-    .map((item) => item.trim())
-    .filter(Boolean)
-    .join(" ")
-    .trim();
-}
-
-function ensureQuestionMark(value) {
-  const text = safeTrim(value).replace(/[.!]+$/, "");
-  if (!text) return "";
-  return text.endsWith("?") ? text : `${text}?`;
-}
-
 function selectionFallbackQuestionForField(fieldPath, language) {
   const en = language === "en";
 
   if (fieldPath === "narrative.scene_setup") {
     return en
-      ? "Where does the scene begin?"
-      : "С чего начинается сцена?";
+      ? "What should be the opening situation of this scene?"
+      : "С какой ситуации должна начаться эта сцена?";
   }
 
   if (fieldPath === "narrative.scene_development") {
     return en
-      ? "What changes as the scene develops?"
-      : "Что меняется по ходу сцены?";
+      ? "What should change or intensify as this scene develops?"
+      : "Что должно измениться или усилиться по ходу этой сцены?";
   }
 
   if (fieldPath === "visual_direction.emotion") {
     return en
-      ? "What should the viewer feel at the end?"
-      : "Какое ощущение должно остаться у зрителя?";
+      ? "What emotion should the scene leave with the viewer?"
+      : "Какое ощущение сцена должна оставить у зрителя?";
   }
 
   if (fieldPath === "scene_core.seed_scene") {
     return en
-      ? "Which scene direction should I develop?"
-      : "Какое направление сцены развиваем?";
+      ? "Which scene direction should I develop as the base?"
+      : "Какое направление сцены взять за основу для развития?";
   }
 
   return en
-    ? "What detail must stay in the scene?"
-    : "Какую деталь точно сохранить в сцене?";
+    ? "What is the most important detail I should preserve while developing this scene?"
+    : "Какую самую важную деталь нужно сохранить при развитии этой сцены?";
 }
 
 function normalizeSceneIdea(item) {
@@ -1258,6 +1170,53 @@ function extractSelectedScene(userInput) {
   }
 
   return userInput.seed_scene.trim();
+}
+
+function safeResultSchemaSnapshot(value) {
+  const rawSchema = isPlainObject(value) ? value : {};
+  const sanitized = sanitizeResultSchemaValue(rawSchema);
+  const schema = isPlainObject(sanitized) ? sanitized : {};
+
+  if (Array.isArray(schema.blocks)) {
+    schema.blocks = schema.blocks
+      .map((block) => safeTrim(block))
+      .filter(Boolean);
+  } else {
+    schema.blocks = [];
+  }
+
+  if (!isPlainObject(schema.block_character_budget)) {
+    schema.block_character_budget = {};
+  }
+
+  return schema;
+}
+
+function sanitizeResultSchemaValue(value) {
+  if (value == null) {
+    return undefined;
+  }
+
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => sanitizeResultSchemaValue(item))
+      .filter((item) => item !== undefined);
+  }
+
+  if (isPlainObject(value)) {
+    const next = {};
+
+    for (const [key, item] of Object.entries(value)) {
+      const sanitized = sanitizeResultSchemaValue(item);
+      if (sanitized !== undefined) {
+        next[key] = sanitized;
+      }
+    }
+
+    return next;
+  }
+
+  return value;
 }
 
 function buildBuildSchemaPrompt(resultSchema, language) {

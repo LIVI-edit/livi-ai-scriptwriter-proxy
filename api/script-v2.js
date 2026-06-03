@@ -269,8 +269,18 @@ async function executeBuildSurface(surfaceRequest) {
 
   const modelInput = buildBuildInput(surfaceRequest);
   const modelRaw = await callModel(modelInput);
+  console.log("=== BUILD MODEL RAW ===");
+  console.log(modelRaw && modelRaw.raw_text);
+  console.log("=== BUILD MODEL PARSED ===");
+  console.log(modelRaw && modelRaw.parsed_json);
+
   const validated = validateBuildResponse(modelRaw);
+  console.log("=== BUILD BEFORE NORMALIZE ===");
+  console.log(validated && validated.blocks);
+
   const normalized = normalizeBuildResponse(validated);
+  console.log("=== BUILD AFTER NORMALIZE ===");
+  console.log(normalized && normalized.output && normalized.output.blocks);
 
   return buildJsonEnvelope({
     stage: EXECUTION_SURFACES.BUILD,

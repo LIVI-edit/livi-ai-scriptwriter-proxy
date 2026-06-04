@@ -193,7 +193,16 @@ async function executeSceneIdeas(surfaceRequest) {
 
   const modelInput = buildSceneIdeasInput(surfaceRequest);
   const modelRaw = await callModel(modelInput);
-  const validated = validateSceneIdeasResponse(modelRaw);
+  console.log("=== SCENE IDEAS RAW ===");
+  console.log(modelRaw && modelRaw.raw_text);
+  console.log("=== SCENE IDEAS PARSED ===");
+  console.log(modelRaw && modelRaw.parsed_json);
+
+  const coercedModelRaw = coerceSceneIdeasModelRaw(modelRaw);
+  console.log("=== SCENE IDEAS AFTER COERCE ===");
+  console.log(coercedModelRaw && coercedModelRaw.parsed_json);
+
+  const validated = validateSceneIdeasResponse(coercedModelRaw);
   const normalized = normalizeSceneIdeasResponse(validated, surfaceRequest);
 
   return buildJsonEnvelope({
@@ -269,18 +278,8 @@ async function executeBuildSurface(surfaceRequest) {
 
   const modelInput = buildBuildInput(surfaceRequest);
   const modelRaw = await callModel(modelInput);
-  console.log("=== BUILD MODEL RAW ===");
-  console.log(modelRaw && modelRaw.raw_text);
-  console.log("=== BUILD MODEL PARSED ===");
-  console.log(modelRaw && modelRaw.parsed_json);
-
   const validated = validateBuildResponse(modelRaw);
-  console.log("=== BUILD BEFORE NORMALIZE ===");
-  console.log(validated && validated.blocks);
-
   const normalized = normalizeBuildResponse(validated);
-  console.log("=== BUILD AFTER NORMALIZE ===");
-  console.log(normalized && normalized.output && normalized.output.blocks);
 
   return buildJsonEnvelope({
     stage: EXECUTION_SURFACES.BUILD,
@@ -753,6 +752,21 @@ async function callModel(modelInput) {
 // ============================================================
 // Response validation
 // ============================================================
+
+function coerceSceneIdeasModelRaw(modelRaw) {
+  const parsed = modelRaw && modelRaw.parsed_json;
+
+  if (Array.isArray(parsed)) {
+    return {
+      ...modelRaw,
+      parsed_json: {
+        ideas: parsed
+      }
+    };
+  }
+
+  return modelRaw;
+}
 
 function validateSceneIdeasResponse(modelRaw) {
   const data = validateBaseModelObject(modelRaw, STAGES.SCENE_IDEAS);

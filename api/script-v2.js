@@ -765,6 +765,19 @@ function coerceSceneIdeasModelRaw(modelRaw) {
     };
   }
 
+  if (
+    parsed &&
+    typeof parsed === "object" &&
+    Array.isArray(parsed.scene_ideas)
+  ) {
+    return {
+      ...modelRaw,
+      parsed_json: {
+        ideas: parsed.scene_ideas
+      }
+    };
+  }
+
   return modelRaw;
 }
 

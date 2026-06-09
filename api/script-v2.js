@@ -1219,12 +1219,25 @@ function normalizeQuestions(value) {
 
 function normalizeBlocks(blocks) {
   const next = {};
+
   for (const [key, value] of Object.entries(ensureObject(blocks))) {
-    if (typeof value !== "string") continue;
-    const trimmed = value.trim();
-    if (!trimmed) continue;
-    next[key] = trimmed;
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      if (!trimmed) continue;
+      next[key] = trimmed;
+      continue;
+    }
+
+    if (
+      isPlainObject(value) &&
+      typeof value.text === "string"
+    ) {
+      const trimmed = value.text.trim();
+      if (!trimmed) continue;
+      next[key] = trimmed;
+    }
   }
+
   return next;
 }
 

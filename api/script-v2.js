@@ -8,6 +8,7 @@ const MODEL = process.env.OPENAI_MODEL || "gpt-4.1-mini";
 const STAGES = {
   SCENE_IDEAS: "scene_ideas",
   SELECTION: "selection",
+  DEVELOPMENT: "development",
   REFINEMENT: "refinement",
   ALIGNMENT: "alignment"
 };
@@ -26,6 +27,7 @@ const STATUSES = {
 const PATCH_POLICY = {
   [EXECUTION_SURFACES.SCENE_IDEAS]: false,
   [EXECUTION_SURFACES.SELECTION]: true,
+  [EXECUTION_SURFACES.DEVELOPMENT]: true,
   [EXECUTION_SURFACES.REFINEMENT]: true,
   [EXECUTION_SURFACES.ALIGNMENT]: false,
   [EXECUTION_SURFACES.BUILD]: false
@@ -48,6 +50,12 @@ const FORBIDDEN_ROUTE_KEYS = new Set([
 // Patch Contract v1 — exact
 const SELECTION_ALLOWED_PATCH_PATHS = new Set([
   "scene_core.seed_scene"
+]);
+
+const DEVELOPMENT_ALLOWED_PATCH_PATHS = new Set([
+  "scene_core.main_focus",
+  "narrative.scene_setup",
+  "narrative.scene_development"
 ]);
 
 const REFINEMENT_ALLOWED_PATCH_PATHS = new Set([
@@ -171,6 +179,8 @@ async function executeSurface(surfaceRequest) {
       return executeSceneIdeas(surfaceRequest);
     case STAGES.SELECTION:
       return executeSelection(surfaceRequest);
+    case STAGES.DEVELOPMENT:
+      return executeDevelopment(surfaceRequest);
     case STAGES.REFINEMENT:
       return executeRefinement(surfaceRequest);
     case STAGES.ALIGNMENT:
@@ -230,6 +240,24 @@ async function executeSelection(surfaceRequest) {
     meta: buildMeta(surfaceRequest, { patch_allowed: true }),
     blueprint_patch: normalized.blueprint_patch,
     error: null
+  });
+}
+
+async function executeDevelopment(surfaceRequest) {
+  assertDevelopmentRequest(surfaceRequest);
+
+  const modelInput = buildDevelopmentInput(surfaceRequest);
+  const modelRaw = await callModel(modelInput);
+  const validated = validateDevelopmentResponse(modelRaw);
+  const normalized = normalizeDevelopmentResponse(validated);
+
+  return buildJsonEnvelope({
+    stage: STAGES.DEVELOPMENT,
+    status: normalized.status,
+    output: normalized.output,
+    meta: buildMeta(surfaceRequest, { patch_allowed: true }),
+    blueprint_patch: normalized.blueprint_patch,
+    error: normalized.error
   });
 }
 
@@ -327,6 +355,16 @@ function assertSelectionRequest(surfaceRequest) {
   const selectedScene = extractSelectedScene(surfaceRequest.user_input);
   if (!selectedScene) {
     throw new Error("Missing selected scene for selection");
+  }
+}
+
+function assertDevelopmentRequest(surfaceRequest) {
+  if (!surfaceRequest.blueprint || typeof surfaceRequest.blueprint !== "object") {
+    throw new Error("Missing blueprint for development");
+  }
+
+  if (!surfaceRequest.blueprint?.scene_core?.seed_scene) {
+    throw new Error("Missing blueprint.scene_core.seed_scene for development");
   }
 }
 
@@ -473,6 +511,110 @@ function buildSelectionInput(surfaceRequest) {
     }
   ];
 }
+function buildDevelopmentInput(surfaceRequest) {
+  const lang = surfaceRequest.language;
+  const developmentContext = buildDevelopmentContext(surfaceRequest);
+
+  return [
+    {
+      role: "system",
+      content: [
+        {
+          type: "input_text",
+          text:
+            `${getLanguageInstruction(lang)}\n` +
+            (lang === "en"
+              ? [
+                  "You work only for the current stage: development.",
+                  "Return JSON only.",
+                  "No route decisions.",
+                  "No next_stage, route, route_decision, go_to_alignment, go_to_build or ready_hint.",
+                  "No readiness logic.",
+                  "Do not launch alignment.",
+                  "Do not launch build.",
+                  "Do not write system_state.",
+                  "Development is not route ownership; it only develops the selected scene.",
+                  'Required JSON shape: { "status": "ok", "message": "developed selected scene", "questions": [], "patch": {} }',
+                  "status must be ok unless the selected scene cannot be safely developed; blocked must remain blocked and must not be converted to ok.",
+                  "message must be a non-empty string and must show how the selected scene is being developed.",
+                  "questions must be an array; default to an empty array.",
+                  "Ask a question only if the selected scene cannot be safely developed without it.",
+                  "Do not be an interviewer.",
+                  "Do not ask empty continuation questions.",
+                  "Do not collect missing inputs.",
+                  "Do not open 3 new scene ideas.",
+                  "Do not behave as Commentary Mode.",
+                  "Generate concrete story material: visible action, event, conflict, character choice, reveal, state change, and cause-and-effect development.",
+                  "Describe what happens in the scene, not what the scene should achieve.",
+                  "Development owns only these patch paths:",
+                  "- scene_core.main_focus",
+                  "- narrative.scene_setup",
+                  "- narrative.scene_development",
+                  "patch must fill all three allowed paths whenever possible.",
+                  "scene_core.main_focus must state the main dramatic focus of the selected scene as concrete story focus, not an abstract theme.",
+                  "narrative.scene_setup must contain the opening story situation as concrete story material.",
+                  "narrative.scene_development must contain the next cause-and-effect development of the selected scene.",
+                  "Do not patch scene_core.seed_scene.",
+                  "Do not patch goal fields.",
+                  "Do not patch meta, extensions, participants, environment, technical_layer, marketing_layer, result_schema, blocks, output.blocks, or system_state.",
+                  "Do not return conditional sections.",
+                  "No markdown."
+                ].join("\n")
+              : [
+                  "Ты работаешь только для текущего этапа: development.",
+                  "Верни только JSON.",
+                  "Без route decisions.",
+                  "Не возвращай next_stage, route, route_decision, go_to_alignment, go_to_build или ready_hint.",
+                  "Без readiness logic.",
+                  "Не запускай alignment.",
+                  "Не запускай build.",
+                  "Не пиши system_state.",
+                  "Development не владеет маршрутом; он только развивает выбранную сцену.",
+                  'Обязательная JSON-форма: { "status": "ok", "message": "развитая выбранная сцена", "questions": [], "patch": {} }',
+                  "status должен быть ok, кроме случаев, когда выбранную сцену невозможно безопасно развить; blocked должен оставаться blocked и не должен превращаться в ok.",
+                  "message должен быть непустой строкой и должен показывать, как развивается выбранная сцена.",
+                  "questions должен быть массивом; по умолчанию возвращай пустой массив.",
+                  "Задавай вопрос только если без него невозможно безопасно развить выбранную сцену.",
+                  "Не будь интервьюером.",
+                  "Не задавай пустые вопросы ради продолжения.",
+                  "Не собирай missing inputs.",
+                  "Не открывай заново 3 идеи сцены.",
+                  "Не переходи в Commentary Mode.",
+                  "Создавай конкретный сюжетный материал: видимое действие, событие, конфликт, выбор персонажа, открытие, изменение состояния и причинно-следственное развитие.",
+                  "Описывай, что происходит в сцене, а не чего сцена должна добиться.",
+                  "Development владеет только этими patch paths:",
+                  "- scene_core.main_focus",
+                  "- narrative.scene_setup",
+                  "- narrative.scene_development",
+                  "patch должен закрывать все три разрешённых path, когда это возможно.",
+                  "scene_core.main_focus должен фиксировать главный драматургический фокус выбранной сцены как конкретный сюжетный фокус, а не абстрактную тему.",
+                  "narrative.scene_setup должен содержать стартовую сюжетную ситуацию как конкретный сюжетный материал.",
+                  "narrative.scene_development должен содержать следующее причинно-следственное развитие выбранной сцены.",
+                  "Не patch scene_core.seed_scene.",
+                  "Не patch goal fields.",
+                  "Не patch meta, extensions, participants, environment, technical_layer, marketing_layer, result_schema, blocks, output.blocks или system_state.",
+                  "Не возвращай conditional sections.",
+                  "Без markdown."
+                ].join("\n"))
+        }
+      ]
+    },
+    {
+      role: "user",
+      content: [
+        {
+          type: "input_text",
+          text:
+            `Blueprint:\n${compact(surfaceRequest.blueprint)}\n\n` +
+            `Development context:\n${compact(developmentContext)}\n\n` +
+            `User input:\n${compact(surfaceRequest.user_input)}\n\n` +
+            `Advanced options:\n${compact(surfaceRequest.advanced_options)}`
+        }
+      ]
+    }
+  ];
+}
+
 function buildRefinementInput(surfaceRequest) {
   const lang = surfaceRequest.language;
   const refinementFieldValues = [
@@ -834,6 +976,31 @@ function validateSelectionResponse(modelRaw) {
   return data;
 }
 
+function validateDevelopmentResponse(modelRaw) {
+  const data = validateBaseModelObject(modelRaw, STAGES.DEVELOPMENT);
+
+  rejectForbiddenDevelopmentTopLevelKeys(data);
+
+  if (typeof data.message !== "string" || !data.message.trim()) {
+    throw new Error("development model response must contain message");
+  }
+
+  if (data.status != null) {
+    data.status = normalizeModelStatus(data.status);
+  }
+
+  if (data.questions != null && !Array.isArray(data.questions)) {
+    throw new Error("development questions must be an array");
+  }
+
+  const rawPatch = getModelPatchObject(data);
+  if (rawPatch != null && !isPlainObject(rawPatch)) {
+    throw new Error("development patch must be an object");
+  }
+
+  return data;
+}
+
 function validateRefinementResponse(modelRaw) {
   const data = validateBaseModelObject(modelRaw, STAGES.REFINEMENT);
 
@@ -927,6 +1094,23 @@ function normalizeSelectionResponse(validated, surfaceRequest) {
     blueprint_patch: selectedScene
       ? { "scene_core.seed_scene": selectedScene }
       : {}
+  };
+}
+
+function normalizeDevelopmentResponse(validated) {
+  const status = normalizeModelStatus(validated.status);
+  const patch = sanitizePatchByPolicy(getModelPatchObject(validated), EXECUTION_SURFACES.DEVELOPMENT);
+
+  return {
+    status,
+    output: {
+      message: safeTrim(validated.message),
+      questions: normalizeQuestions(validated.questions)
+    },
+    blueprint_patch: patch,
+    error: status === STATUSES.OK
+      ? null
+      : buildModelStatusError(status, validated, "DEVELOPMENT")
   };
 }
 
@@ -1036,6 +1220,10 @@ function isAllowedPatchPath(path, surface) {
     return SELECTION_ALLOWED_PATCH_PATHS.has(path);
   }
 
+  if (surface === EXECUTION_SURFACES.DEVELOPMENT) {
+    return DEVELOPMENT_ALLOWED_PATCH_PATHS.has(path);
+  }
+
   if (surface === EXECUTION_SURFACES.REFINEMENT) {
     return REFINEMENT_ALLOWED_PATCH_PATHS.has(path);
   }
@@ -1060,7 +1248,13 @@ function isForbiddenSystemPath(path) {
     path.startsWith("participants.") ||
     path.startsWith("environment.") ||
     path.startsWith("technical_layer.") ||
-    path.startsWith("marketing_layer.")
+    path.startsWith("marketing_layer.") ||
+    path === "result_schema" ||
+    path.startsWith("result_schema.") ||
+    path === "blocks" ||
+    path.startsWith("blocks.") ||
+    path === "output.blocks" ||
+    path.startsWith("output.blocks.")
   );
 }
 
@@ -1081,6 +1275,114 @@ function sanitizePatchValue(value) {
 // ============================================================
 // Helpers for ideas / questions / blocks / selection
 // ============================================================
+
+function buildDevelopmentContext(surfaceRequest) {
+  const blueprint = ensureObject(surfaceRequest?.blueprint);
+
+  return {
+    selected_scene: safeTrim(blueprint?.scene_core?.seed_scene),
+    concept_line: safeTrim(blueprint?.scene_core?.concept_line),
+    video_topic: safeTrim(blueprint?.goal?.video_topic),
+    video_goal: safeTrim(blueprint?.goal?.video_goal),
+    video_type: safeTrim(blueprint?.meta?.video_type),
+    scriptwriter_role: safeTrim(blueprint?.meta?.scriptwriter_role),
+    emotion: blueprint?.visual_direction?.emotion ?? null,
+    known_inputs: ensureObject(blueprint?.system_state?.known_inputs),
+    current_stage: blueprint?.system_state?.current_stage || STAGES.DEVELOPMENT,
+    development_owns: [
+      "scene_core.main_focus",
+      "narrative.scene_setup",
+      "narrative.scene_development"
+    ],
+    forbidden_patch_paths: [
+      "scene_core.seed_scene",
+      "system_state.*",
+      "meta.*",
+      "extensions.*",
+      "participants.*",
+      "environment.*",
+      "technical_layer.*",
+      "marketing_layer.*",
+      "result_schema",
+      "blocks",
+      "output.blocks"
+    ]
+  };
+}
+
+function getModelPatchObject(data) {
+  if (!isPlainObject(data)) return null;
+  if (isPlainObject(data.patch)) return data.patch;
+  if (isPlainObject(data.blueprint_patch)) return data.blueprint_patch;
+  return null;
+}
+
+function normalizeModelStatus(value) {
+  if (value === null || value === undefined || String(value).trim() === "") {
+    return STATUSES.OK;
+  }
+
+  const status = String(value).trim().toLowerCase();
+
+  if (status === STATUSES.OK) return STATUSES.OK;
+  if (status === STATUSES.BLOCKED) return STATUSES.BLOCKED;
+  if (status === STATUSES.ERROR) return STATUSES.ERROR;
+
+  return STATUSES.ERROR;
+}
+
+function buildModelStatusError(status, validated, codePrefix) {
+  const code = status === STATUSES.BLOCKED
+    ? `${codePrefix}_BLOCKED`
+    : `${codePrefix}_ERROR`;
+
+  const message =
+    safeTrim(validated?.error?.message) ||
+    safeTrim(validated?.error) ||
+    safeTrim(validated?.message) ||
+    (status === STATUSES.BLOCKED ? "Development blocked" : "Development failed");
+
+  return { code, message };
+}
+
+function rejectForbiddenDevelopmentTopLevelKeys(data) {
+  const forbiddenTopLevelKeys = new Set([
+    "next_stage",
+    "go_to_alignment",
+    "go_to_build",
+    "ask_more_questions",
+    "route_decision",
+    "route",
+    "advance",
+    "advance_to_alignment",
+    "advance_to_build",
+    "ready_hint",
+    "response_stage",
+    "system_state",
+    "ready_for_final_assembly",
+    "required_inputs_complete",
+    "minimum_usable_readiness",
+    "meta",
+    "extensions",
+    "participants",
+    "environment",
+    "technical_layer",
+    "marketing_layer",
+    "result_schema",
+    "blocks"
+  ]);
+
+  for (const key of Object.keys(ensureObject(data))) {
+    if (key === "patch" || key === "blueprint_patch") continue;
+    if (forbiddenTopLevelKeys.has(key)) {
+      throw new Error(`Forbidden development response key returned by model: ${key}`);
+    }
+  }
+
+  if (isPlainObject(data.output) && isPlainObject(data.output.blocks)) {
+    throw new Error("Forbidden development response key returned by model: output.blocks");
+  }
+}
 
 function buildSelectionGuidanceContext(surfaceRequest, selectedScene) {
   return {

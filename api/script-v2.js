@@ -267,7 +267,7 @@ async function executeRefinement(surfaceRequest) {
   const modelInput = buildRefinementInput(surfaceRequest);
   const modelRaw = await callModel(modelInput);
   const validated = validateRefinementResponse(modelRaw);
-  const normalized = normalizeRefinementResponse(validated);
+  const normalized = normalizeRefinementResponse(validated, surfaceRequest.language);
 
   return buildJsonEnvelope({
     stage: STAGES.REFINEMENT,
@@ -651,12 +651,17 @@ function buildRefinementInput(surfaceRequest) {
                   "An empty field is not an automatic reason to ask a question.",
                   "First extract the maximum available information from Blueprint, user_input and advanced_options.",
                   "If a value can be reasonably inferred without distorting the user's intent, you must return it through patch.",
-                  "message must start with the accepted scriptwriting decision, not with a question.",
-                  "Prefer independent professional scriptwriting decisions for: narrative.scene_setup, narrative.scene_development, visual_direction.emotion.",
+                  "Refinement is a working patch step, not the final trust or alignment layer.",
+                  "You may independently infer and patch simple missing details, especially for narrative.scene_setup, narrative.scene_development, and visual_direction.emotion.",
                   "Do not ask about decisions a professional scriptwriter can make: basic emotion, opening situation, scene development, pace, dramatic accent.",
+                  "message must describe current-stage processing only: acknowledge the input, say the working scene direction was updated, and prepare it for pre-final alignment.",
+                  "message must not start with an accepted scriptwriting decision.",
+                  "message must not sound like final fixation, final concept approval, or an explanation of the future final result.",
+                  "Forbidden message wording includes: 'Accepted decision', 'Final decision', 'We are making the video focus on', 'The main idea will be', 'Final concept', and full explanations of what the final result will contain.",
+                  "The final explanation of what was decided and why belongs to alignment, not refinement.",
                   "A question is allowed only when the missing answer could change the video goal, the meaning of the scene, or the selected direction.",
                   "If a question is needed, ask at most one short, concrete question.",
-                  "If a question is asked, first give the recommended option in message, then ask the single question.",
+                  "If a question is asked, keep message limited to the current refinement update, then ask the single question.",
                   "Even when a question is needed, return the fullest valid patch for every field that can already be closed.",
                   "questions must be empty if patch already closes the current stage well enough.",
                   "Allowed patch paths only:",
@@ -683,12 +688,17 @@ function buildRefinementInput(surfaceRequest) {
                   "Пустое поле не является автоматической причиной задавать вопрос.",
                   "Сначала извлекай максимум информации из Blueprint, user_input и advanced_options.",
                   "Если значение можно разумно вывести без искажения замысла пользователя, обязательно верни его через patch.",
-                  "message должен начинаться с принятого сценарного решения, а не с вопроса.",
-                  "Для narrative.scene_setup, narrative.scene_development, visual_direction.emotion предпочитай самостоятельное профессиональное сценарное решение.",
+                  "Refinement — это рабочий patch-step, а не финальный trust-layer и не Alignment.",
+                  "Ты можешь самостоятельно вывести и закрыть через patch простые недостающие детали, особенно narrative.scene_setup, narrative.scene_development и visual_direction.emotion.",
                   "Не спрашивай о том, что сценарист может профессионально решить сам: базовая эмоция, начальная ситуация, развитие сцены, темп, драматургический акцент.",
+                  "message должен описывать только обработку текущего этапа: что ввод понят, рабочая основа сцены обновлена и сцена подготовлена к предфинальному согласованию.",
+                  "message не должен начинаться с принятого сценарного решения.",
+                  "message не должен звучать как финальная фиксация, утверждение финальной концепции или объяснение будущего финального результата.",
+                  "Запрещённые формулировки в message: 'Принято решение', 'Финально фиксируем', 'Делаем видео с акцентом', 'Основная идея будет', 'Финальная концепция' и полноценные объяснения того, каким будет финал.",
+                  "Финальное объяснение, что именно решено и почему, принадлежит Alignment, не Refinement.",
                   "Вопрос разрешён только если без ответа есть риск изменить цель видео, смысл сцены или выбранное направление.",
                   "Если вопрос нужен, задай максимум один короткий конкретный вопрос.",
-                  "Если вопрос задаётся, сначала дай рекомендуемый вариант в message, затем задай единственный вопрос.",
+                  "Если вопрос задаётся, ограничь message текущим refinement-обновлением, затем задай единственный вопрос.",
                   "Даже если вопрос нужен, верни максимально полный валидный patch по всем полям, которые уже можно закрыть.",
                   "questions должны быть пустыми, если patch уже достаточно хорошо закрывает текущий этап.",
                   "Разрешённые patch paths только:",
@@ -1114,16 +1124,58 @@ function normalizeDevelopmentResponse(validated) {
   };
 }
 
-function normalizeRefinementResponse(validated) {
+function normalizeRefinementResponse(validated, language) {
   const patch = sanitizePatchByPolicy(validated.patch, EXECUTION_SURFACES.REFINEMENT);
 
   return {
     output: {
-      message: safeTrim(validated.message),
+      message: normalizeRefinementPublicMessage(validated.message, language),
       questions: normalizeQuestions(validated.questions)
     },
     blueprint_patch: patch
   };
+}
+
+function normalizeRefinementPublicMessage(message, language) {
+  const text = safeTrim(message);
+
+  if (!text || isForbiddenRefinementPublicMessage(text)) {
+    return getRefinementFallbackMessage(language);
+  }
+
+  return text;
+}
+
+function isForbiddenRefinementPublicMessage(message) {
+  const normalized = safeTrim(message)
+    .toLowerCase()
+    .replace(/ё/g, "е")
+    .replace(/\s+/g, " ");
+
+  const forbiddenPatterns = [
+    /\baccepted decision\b/,
+    /\bfinal decision\b/,
+    /\bfinal concept\b/,
+    /\bthe main idea will be\b/,
+    /\bwe (are|will be|'re) making the video focus on\b/,
+    /\bthe video will focus on\b/,
+    /\bfinally fix(ing)?\b/,
+    /\bfinal result will\b/,
+    /принято решение/,
+    /финально фиксируем/,
+    /делаем видео с акцентом/,
+    /основная идея будет/,
+    /финальная концепция/,
+    /финальный результат будет/
+  ];
+
+  return forbiddenPatterns.some((pattern) => pattern.test(normalized));
+}
+
+function getRefinementFallbackMessage(language) {
+  return language === "en"
+    ? "I've refined the scene based on your input and prepared it for the pre-final alignment step."
+    : "Я доуточнил сцену по твоему вводу и подготовил её к предфинальному согласованию.";
 }
 
 function normalizeAlignmentResponse(validated) {

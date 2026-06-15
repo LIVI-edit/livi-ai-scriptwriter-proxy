@@ -285,7 +285,7 @@ async function executeAlignment(surfaceRequest) {
   const modelInput = buildAlignmentInput(surfaceRequest);
   const modelRaw = await callModel(modelInput);
   const validated = validateAlignmentResponse(modelRaw);
-  const normalized = normalizeAlignmentResponse(validated);
+  const normalized = normalizeAlignmentResponse(validated, surfaceRequest.language);
 
   return buildJsonEnvelope({
     stage: STAGES.ALIGNMENT,
@@ -557,7 +557,7 @@ function buildDevelopmentInput(surfaceRequest) {
                   "message must be a non-empty string and must show how the selected scene is being developed.",
                   "message must first develop the selected scene with concrete story material.",
                   "message must end with exactly one short handoff sentence.",
-                  "The handoff sentence must say that the user can clarify details, change direction, confirm the current basis, or write: \"do what you think is best\".",
+                  "The handoff sentence must speak directly to the user: You can clarify details, change direction, confirm the current basis, or write: \"do what you think is best\".",
                   "Keep the handoff inside message only; do not put it into questions.",
                   "The handoff must not mention refinement, alignment, build, route decisions, readiness, final result, or final assembly.",
                   "The handoff must not ask a question and must not turn Development into interviewer mode.",
@@ -599,7 +599,7 @@ function buildDevelopmentInput(surfaceRequest) {
                   "message должен быть непустой строкой и должен показывать, как развивается выбранная сцена.",
                   "message сначала должен развить выбранную сцену конкретным сюжетным материалом.",
                   "message должен заканчиваться ровно одним коротким handoff-предложением.",
-                  "Handoff-предложение должно сказать, что пользователь может уточнить детали, изменить направление, подтвердить текущую основу или написать: “сделай как лучше”.",
+                  "Handoff-предложение должно обращаться напрямую к пользователю: Можешь уточнить детали, изменить направление, подтвердить текущую основу или написать: “сделай как лучше”.",
                   "Держи handoff только внутри message; не выноси его в questions.",
                   "Handoff не должен упоминать refinement, alignment, build, route decisions, readiness, финальный результат или финальную сборку.",
                   "Handoff не должен быть вопросом и не должен превращать Development в interviewer mode.",
@@ -774,57 +774,47 @@ function buildAlignmentInput(surfaceRequest) {
             `${getLanguageInstruction(lang)}\n` +
             (lang === "en"
               ? [
-                  "You work only for the current stage: alignment.",
+                  "Write only the current pre-final message for the user.",
                   "Return JSON only.",
                   "Required JSON shape: { \"message\": \"...\" }.",
                   "The key \"message\" is mandatory.",
                   "message must be a non-empty string.",
-                  "message must be a short pre-final trust layer, not a generic comment.",
+                  "message must sound like a scriptwriter speaking directly to the user, not like a system report.",
                   "message must contain 4-7 short sentences.",
-                  "message must explain how the system understood the user's task from the current Blueprint.",
-                  "message must name 2-3 decisions that are already fixed from the Blueprint, such as the selected scene, goal, emotional direction, story setup, or development logic.",
-                  "message must explain what type of result will be assembled after Build, using result categories rather than writing the final script.",
+                  "message must start from direct understanding, for example: I understood the task this way...",
+                  "message must name 2-3 decisions that are already fixed from the current scene data: selected scene, goal, emotional direction, story setup, or development logic.",
+                  "message must explain what kind of result you will assemble when the user clicks the button, using result categories rather than writing the final script.",
                   "message must softly tell the user: if everything fits, click “Build LiVi structure”.",
-                  "message must say that after the result is assembled, the user will be able to fine-tune the needed parts.",
-                  "Alignment does not decide whether Build is allowed.",
-                  "Alignment does not launch Build.",
-                  "Alignment only explains the next manual user step if the UI has already reached a Build-ready state.",
-                  "No route decisions.",
-                  "No build admission.",
-                  "Do not write that Build is allowed or approved.",
-                  "Do not write that you are launching Build.",
-                  "Do not write that the final result is already assembled.",
-                  "Do not return blueprint patch.",
+                  "message must say that after the result appears, the user will be able to fine-tune the needed parts.",
+                  "Do not expose internal data names, raw JSON key names, process labels, or technical status labels in message.",
+                  "Do not write like an impersonal system.",
+                  "Do not write that any assembly is allowed, approved, already launched, or already finished.",
+                  "Do not return a patch.",
                   "Do not open new branches or new options.",
                   "Do not ask broad new questions.",
-                  "Do not turn Alignment into the final script or final deliverable.",
+                  "Do not turn the message into the final script or final deliverable.",
                   "No markdown."
                 ].join("\n")
               : [
-                  "Ты работаешь только для текущего этапа: alignment.",
+                  "Пиши только текущее предфинальное сообщение для пользователя.",
                   "Верни только JSON.",
                   "Обязательная JSON-форма: { \"message\": \"...\" }.",
                   "Ключ \"message\" обязателен.",
                   "message должен быть непустой строкой.",
-                  "message должен быть коротким предфинальным trust-layer, а не общим комментарием.",
+                  "message должен звучать как живая прямая речь сценариста к пользователю, а не как системный отчёт.",
                   "message должен содержать 4–7 коротких предложений.",
-                  "message должен объяснить, как система поняла задачу пользователя из текущего Blueprint.",
-                  "message должен назвать 2–3 уже зафиксированных решения из Blueprint: выбранную сцену, цель, эмоциональное направление, старт ситуации или логику развития.",
-                  "message должен объяснить, какой тип результата будет собран после Build, через категории результата, а не через написание финального сценария.",
+                  "message должен начинаться с прямого понимания, например: Я понял задачу так...",
+                  "message должен назвать 2–3 уже зафиксированных решения из текущих данных сцены: выбранную сцену, цель, эмоциональное направление, старт ситуации или логику развития.",
+                  "message должен объяснить, какой результат ты соберёшь после нажатия кнопки, через категории результата, а не через написание финального сценария.",
                   "message должен мягко сказать пользователю: если всё подходит, нажми “Собрать структуру LiVi”.",
-                  "message должен сказать, что после результата можно будет точечно доработать нужные части.",
-                  "Alignment не решает, разрешён ли Build.",
-                  "Alignment не запускает Build.",
-                  "Alignment только объясняет следующий ручной шаг пользователя, если UI уже дошёл до Build-ready состояния.",
-                  "Без route decisions.",
-                  "Без build admission.",
-                  "Не пиши, что Build разрешён или одобрен.",
-                  "Не пиши, что ты запускаешь Build.",
-                  "Не пиши, что финальный результат уже собран.",
-                  "Не возвращай blueprint patch.",
+                  "message должен сказать, что после появления результата можно будет точечно доработать нужные части.",
+                  "Не раскрывай внутренние названия данных, сырые имена JSON-ключей, процессные ярлыки или технические статусы в message.",
+                  "Не пиши обезличенным системным тоном.",
+                  "Не пиши, что какая-либо сборка разрешена, одобрена, уже запущена или уже завершена.",
+                  "Не возвращай patch.",
                   "Не открывай новые ветки или новые варианты.",
                   "Не задавай широких новых вопросов.",
-                  "Не превращай Alignment в финальный сценарий или финальный результат.",
+                  "Не превращай message в финальный сценарий или финальный результат.",
                   "Без markdown."
                 ].join("\n"))
         }
@@ -836,7 +826,7 @@ function buildAlignmentInput(surfaceRequest) {
         {
           type: "input_text",
           text:
-            `Blueprint:\n${compact(surfaceRequest.blueprint)}\n\n` +
+            `Current scene data:\n${compact(surfaceRequest.blueprint)}\n\n` +
             `User input:\n${compact(surfaceRequest.user_input)}\n\n` +
             `Advanced options:\n${compact(surfaceRequest.advanced_options)}`
         }
@@ -1240,14 +1230,69 @@ function getRefinementFallbackMessage(language) {
     : "Я доуточнил сцену по твоему вводу и подготовил её к предфинальному согласованию.";
 }
 
-function normalizeAlignmentResponse(validated) {
+function normalizeAlignmentResponse(validated, language) {
   return {
     output: {
-      message: safeTrim(validated.message),
+      message: normalizeAlignmentPublicMessage(validated.message, language),
       questions: normalizeQuestions(validated.questions)
     },
     blueprint_patch: null
   };
+}
+
+function normalizeAlignmentPublicMessage(message, language) {
+  const text = safeTrim(message);
+
+  if (
+    !text ||
+    !hasAlignmentSentenceCount(text) ||
+    isForbiddenAlignmentPublicMessage(text)
+  ) {
+    return getAlignmentFallbackMessage(language);
+  }
+
+  return text;
+}
+
+function hasAlignmentSentenceCount(message) {
+  const sentences = safeTrim(message)
+    .split(/[.!?…]+|[。！？]+/u)
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+  return sentences.length >= 4 && sentences.length <= 7;
+}
+
+function isForbiddenAlignmentPublicMessage(message) {
+  const normalized = safeTrim(message)
+    .toLowerCase()
+    .replace(/ё/g, "е")
+    .replace(/[“”]/g, '"')
+    .replace(/\s+/g, " ");
+
+  const forbiddenPatterns = [
+    /система поняла/,
+    /blueprint/,
+    /стади[яи] build/,
+    /этап build/,
+    /build stage/,
+    /\bstage\b/,
+    /trust-layer/,
+    /trust layer/,
+    /\broute\b/,
+    /route decisions?/,
+    /readiness/,
+    /system_state/,
+    /build разреш[её]н/,
+    /build одобрен/,
+    /запускаю build/,
+    /финальный результат уже собран/,
+    /after build/,
+    /current blueprint/,
+    /system understood/
+  ];
+
+  return forbiddenPatterns.some((pattern) => pattern.test(normalized));
 }
 
 function normalizeBuildResponse(validated, resultSchema = {}) {
@@ -1870,8 +1915,8 @@ function detectLanguageFromModelRaw(modelRaw) {
 
 function getAlignmentFallbackMessage(language) {
   return language === "en"
-    ? "Got it. I’ll align the final direction from the current state."
-    : "Принято. Я выравниваю финальное направление из текущего состояния.";
+    ? "I understood the task this way: we take the selected scene as the basis and keep the focus on a usable video result. The fixed direction is the scene idea, the goal, and the emotional line already present in the working data. As the result, I’ll assemble the needed LiVi structure: overview, scene logic, script or prompt blocks, and production notes where they apply. If everything fits, click “Build LiVi structure”. After the result appears, you can fine-tune the needed parts."
+    : "Я понял задачу так: за основу берём выбранную сцену и держим фокус на применимом результате для видео. Уже зафиксированы направление сцены, цель и эмоциональная линия, которые есть в рабочих данных. В результате я соберу нужную структуру LiVi: обзор, логику сцены, сценарные или prompt-блоки и производственные заметки там, где они нужны. Если всё подходит, нажми “Собрать структуру LiVi”. После результата можно будет точечно доработать нужные части.";
 }
 
 function safeParseBody(body) {

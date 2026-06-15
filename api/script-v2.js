@@ -304,7 +304,17 @@ async function executeAlignment(surfaceRequest) {
 async function executeBuildSurface(surfaceRequest) {
   assertBuildRequest(surfaceRequest);
 
-  const modelInput = buildBuildInput(surfaceRequest);
+  const resultSchema = safeResultSchemaSnapshot(surfaceRequest?.meta?.result_schema);
+
+  if (!hasBuildAllowedBlocks(resultSchema)) {
+    return buildBuildSurfaceErrorEnvelope({
+      surfaceRequest,
+      code: "BUILD_RESULT_SCHEMA_EMPTY",
+      message: "Build result schema has no allowed blocks."
+    });
+  }
+
+  const modelInput = buildBuildInput(surfaceRequest, resultSchema);
 
   const modelRaw = await callModel(modelInput);
 
@@ -319,10 +329,18 @@ async function executeBuildSurface(surfaceRequest) {
   console.log("=== BUILD VALIDATED ===");
   console.log(validated);
 
-  const normalized = normalizeBuildResponse(validated);
+  const normalized = normalizeBuildResponse(validated, resultSchema);
 
   console.log("=== BUILD NORMALIZED ===");
   console.log(normalized?.output?.blocks);
+
+  if (!hasNonEmptyBuildBlocks(normalized?.output?.blocks)) {
+    return buildBuildSurfaceErrorEnvelope({
+      surfaceRequest,
+      code: "BUILD_EMPTY_BLOCKS",
+      message: "Build returned no content blocks."
+    });
+  }
 
   return buildJsonEnvelope({
     stage: EXECUTION_SURFACES.BUILD,
@@ -827,9 +845,11 @@ function buildAlignmentInput(surfaceRequest) {
   ];
 }
 
-function buildBuildInput(surfaceRequest) {
+function buildBuildInput(surfaceRequest, resultSchemaSnapshot = null) {
   const lang = surfaceRequest.language;
-  const resultSchema = safeResultSchemaSnapshot(surfaceRequest?.meta?.result_schema);
+  const resultSchema = isPlainObject(resultSchemaSnapshot)
+    ? resultSchemaSnapshot
+    : safeResultSchemaSnapshot(surfaceRequest?.meta?.result_schema);
   const schemaPrompt = buildBuildSchemaPrompt(resultSchema, lang);
 
   return [
@@ -856,7 +876,9 @@ function buildBuildInput(surfaceRequest) {
                   "Do not return explanation.",
                   "Do not return output.",
                   "Do not return any keys outside blocks.",
-                  'If you cannot generate content, still return: { "blocks": {} }.',
+                  "If one allowed block cannot be generated, omit only that block.",
+                  "If allowed_blocks is non-empty, do not return an empty blocks object.",
+                  "Generate every possible allowed block from the Blueprint.",
                   "Use result_schema as a hard pre-generation constraint.",
                   "Generate only the allowed blocks from result_schema.blocks.",
                   "Do not generate any forbidden blocks.",
@@ -878,7 +900,9 @@ function buildBuildInput(surfaceRequest) {
                   "Не возвращай explanation.",
                   "Не возвращай output.",
                   "Не возвращай любые ключи вне blocks.",
-                  'Если не можешь сгенерировать содержимое, всё равно верни: { "blocks": {} }.',
+                  "Если один разрешённый блок невозможно сгенерировать, пропусти только этот блок.",
+                  "Если allowed_blocks непустой, не возвращай пустой объект blocks.",
+                  "Сгенерируй каждый возможный разрешённый блок из Blueprint.",
                   "Используй result_schema как жёсткое pre-generation ограничение.",
                   "Генерируй только разрешённые блоки из result_schema.blocks.",
                   "Не генерируй запрещённые блоки.",
@@ -1226,10 +1250,10 @@ function normalizeAlignmentResponse(validated) {
   };
 }
 
-function normalizeBuildResponse(validated) {
+function normalizeBuildResponse(validated, resultSchema = {}) {
   return {
     output: {
-      blocks: normalizeBlocks(validated.blocks)
+      blocks: normalizeBlocks(validated.blocks, getBuildAllowedBlocks(resultSchema))
     }
   };
 }
@@ -1619,10 +1643,15 @@ function normalizeQuestions(value) {
     .slice(0, 3);
 }
 
-function normalizeBlocks(blocks) {
+function normalizeBlocks(blocks, allowedBlocks = null) {
   const next = {};
+  const allowedSet = Array.isArray(allowedBlocks)
+    ? new Set(allowedBlocks)
+    : null;
 
   for (const [key, value] of Object.entries(ensureObject(blocks))) {
+    if (allowedSet && !allowedSet.has(key)) continue;
+
     if (typeof value === "string") {
       const trimmed = value.trim();
       if (!trimmed) continue;
@@ -1641,6 +1670,36 @@ function normalizeBlocks(blocks) {
   }
 
   return next;
+}
+
+function getBuildAllowedBlocks(resultSchema) {
+  return Array.isArray(resultSchema?.blocks)
+    ? resultSchema.blocks.map((block) => safeTrim(block)).filter(Boolean)
+    : [];
+}
+
+function hasBuildAllowedBlocks(resultSchema) {
+  return getBuildAllowedBlocks(resultSchema).length > 0;
+}
+
+function hasNonEmptyBuildBlocks(blocks) {
+  return Object.keys(ensureObject(blocks)).length > 0;
+}
+
+function buildBuildSurfaceErrorEnvelope({ surfaceRequest, code, message }) {
+  return buildJsonEnvelope({
+    stage: EXECUTION_SURFACES.BUILD,
+    status: STATUSES.ERROR,
+    output: {
+      blocks: {}
+    },
+    meta: buildMeta(surfaceRequest, { patch_allowed: false }),
+    blueprint_patch: null,
+    error: {
+      code,
+      message
+    }
+  });
 }
 
 function extractSelectedScene(userInput) {
@@ -1729,9 +1788,12 @@ function buildBuildSchemaPrompt(resultSchema, language) {
       `- forbidden_blocks: ${forbiddenBlocks.join(", ") || "none"}`,
       "- expected_result_composition:",
       ...compositionLines,
-      "- Return blocks only under output.blocks.",
+      "- Return blocks only under blocks.",
       "- Do not add blocks outside allowed_blocks.",
-      "- If a block is not allowed, omit it completely."
+      "- If a block is not allowed, omit it completely.",
+      "- If one allowed block cannot be generated, omit only that block.",
+      "- If allowed_blocks is non-empty, do not return an empty blocks object.",
+      "- Generate every possible allowed block from the Blueprint."
     ].join("\n");
   }
 
@@ -1746,9 +1808,12 @@ function buildBuildSchemaPrompt(resultSchema, language) {
     `- forbidden_blocks: ${forbiddenBlocks.join(", ") || "none"}`,
     "- expected_result_composition:",
     ...compositionLines,
-    "- Возвращай блоки только внутри output.blocks.",
+    "- Возвращай блоки только внутри blocks.",
     "- Не добавляй блоки вне allowed_blocks.",
-    "- Если блок не разрешён, полностью пропусти его."
+    "- Если блок не разрешён, полностью пропусти его.",
+    "- Если один разрешённый блок невозможно сгенерировать, пропусти только этот блок.",
+    "- Если allowed_blocks непустой, не возвращай пустой объект blocks.",
+    "- Сгенерируй каждый возможный разрешённый блок из Blueprint."
   ].join("\n");
 }
 

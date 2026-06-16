@@ -92,6 +92,254 @@ const BUILD_BLOCK_CATALOG = Object.freeze([
   "video_prompt_variations"
 ]);
 
+
+// Development-only Behavior Directives v1.1
+// Field-scoped canonicalization only. Do not replace with a shared normalizeValue().
+const ROLE_ALIASES = Object.freeze({
+  creative_director: "creative_director",
+  creative_director_role: "creative_director",
+  cinematic: "creative_director",
+  nika: "creative_director",
+  nika_creative_director: "creative_director",
+  commercial_strategist: "commercial_strategist",
+  commercial: "commercial_strategist",
+  viral: "commercial_strategist",
+  max: "commercial_strategist",
+  max_commercial_strategist: "commercial_strategist",
+  cinematographer: "cinematographer",
+  camera: "cinematographer",
+  brand: "cinematographer",
+  sara: "cinematographer",
+  sara_cinematographer: "cinematographer",
+  film_director: "film_director",
+  director: "film_director",
+  interactive: "film_director",
+  zhora: "film_director",
+  zhora_film_director: "film_director"
+});
+
+const VIDEO_TYPE_ALIASES = Object.freeze({
+  video: "video",
+  promo: "promo",
+  промо: "promo",
+  interactive: "interactive",
+  interactive_pro: "interactive",
+  интерактив: "interactive",
+  интерактив_pro: "interactive",
+  video_prompt: "video_prompt",
+  image_prompt: "image_prompt"
+});
+
+const GOAL_ALIASES = Object.freeze({
+  product_service: "product_service",
+  product: "product_service",
+  service: "product_service",
+  товар_услуга: "product_service",
+  brand_video: "brand_video",
+  brand: "brand_video",
+  бренд_видео: "brand_video",
+  promotion_ad: "promotion_ad",
+  promotion: "promotion_ad",
+  ad: "promotion_ad",
+  promo: "promotion_ad",
+  продвижение_реклама: "promotion_ad",
+  presentation_pitch: "presentation_pitch",
+  presentation: "presentation_pitch",
+  pitch: "presentation_pitch",
+  презентация_питч: "presentation_pitch",
+  youtube_social: "social_media",
+  youtube: "social_media",
+  social: "social_media",
+  social_media: "social_media",
+  соцсети: "social_media",
+  youtube_соцсети: "social_media",
+  explainer_education: "education_explainer",
+  education_explainer: "education_explainer",
+  explainer: "education_explainer",
+  education: "education_explainer",
+  объяснение_обучение: "education_explainer",
+  story_narrative: "story_narrative",
+  story: "story_narrative",
+  narrative: "story_narrative",
+  история_нарратив: "story_narrative",
+  creative_concept: "creative_concept",
+  creative: "creative_concept",
+  concept: "creative_concept",
+  креатив_концепт: "creative_concept",
+  general: "creative_concept"
+});
+
+const EMOTION_ALIASES = Object.freeze({
+  epic: "epic",
+  эпично: "epic",
+  inspiring: "inspiring",
+  inspirational: "inspiring",
+  вдохновляюще: "inspiring",
+  technological: "technological",
+  технологично: "technological",
+  mysterious: "mysterious",
+  таинственно: "mysterious",
+  calm: "calm",
+  спокойно: "calm",
+  energetic: "energetic",
+  энергично: "energetic",
+  minimal: "minimalist",
+  minimalist: "minimalist",
+  минималистично: "minimalist",
+  dreamlike: "dreamlike",
+  сновидчески: "dreamlike",
+  neutral: "neutral"
+});
+
+const SCENE_ACTION_ALIASES = Object.freeze({
+  reveal: "reveal",
+  journey: "journey",
+  transformation: "transformation",
+  interaction: "interaction",
+  presentation: "presentation",
+  discovery: "discovery",
+  choice: "choice",
+  system_awakening: "system_awakening"
+});
+
+const ADVANCED_MODULE_ALIASES = Object.freeze({
+  characters: "characters",
+  characters_pro: "characters",
+  voice_over: "voice_over",
+  voiceover: "voice_over",
+  voice_over_pro: "voice_over",
+  camera_details: "camera_details",
+  camera_details_pro: "camera_details",
+  camera_plan: "camera_details",
+  camera_plan_pro: "camera_details",
+  video_prompt: "video_prompt",
+  video_prompts: "video_prompt",
+  video_prompt_pro: "video_prompt",
+  video_prompts_pro: "video_prompt",
+  branching: "branching",
+  branching_choices: "branching",
+  branching_choices_pro: "branching",
+  cta_strategy: "cta_strategy",
+  cta: "cta_strategy",
+  cta_strategy_pro: "cta_strategy",
+  image_prompt: "image_prompt",
+  scene_prompt: "image_prompt",
+  scene_prompts: "image_prompt",
+  scene_prompts_pro: "image_prompt",
+  dialogue: "dialogue",
+  dialogue_mode: "dialogue",
+  dialogue_mode_pro: "dialogue"
+});
+
+const ROLE_LENSES = Object.freeze({
+  creative_director: "concept, atmosphere, meaning and creative unity",
+  commercial_strategist: "audience value, retention, offer and CTA logic",
+  cinematographer: "frame, light, optics, composition and visual depth",
+  film_director: "action, staging, pace, mise-en-scene and dramatic rhythm"
+});
+
+const TYPE_LENSES = Object.freeze({
+  video: "clear scene, action development and usable video structure",
+  promo: "pain, value, offer, viewer action and commercial logic",
+  interactive: "choice, consequence, viewer role and branching-ready setup",
+  video_prompt: "motion, camera, in-frame action and generation-ready detail",
+  image_prompt: "one strong frame, subject, composition, light and style"
+});
+
+const GOAL_LENSES = Object.freeze({
+  product_service: "show product or service value and viewer action",
+  brand_video: "build brand image, trust and distinctive character",
+  promotion_ad: "strengthen retention, offer, conversion and CTA logic",
+  presentation_pitch: "clarify the idea, argument, persuasion and delivery",
+  social_media: "increase hook, tempo, attention and retention",
+  education_explainer: "make the sequence clear, useful and easy to learn",
+  story_narrative: "develop conflict, choice, transformation and emotional arc",
+  creative_concept: "protect originality, atmosphere and symbolic idea"
+});
+
+const EMOTION_LENSES = Object.freeze({
+  epic: "scale, high dramatic weight and elevated stakes",
+  inspiring: "hope, growth and forward movement",
+  technological: "digital clarity, innovation and modernity",
+  mysterious: "hidden meaning, tension and controlled uncertainty",
+  calm: "soft tempo, clarity and restraint",
+  energetic: "speed, impulse and dynamic escalation",
+  minimalist: "clean, simple and precise expression",
+  dreamlike: "surreal, soft and symbolic perception",
+  neutral: "neutral tone without extra emotional pressure"
+});
+
+const SCENE_ACTION_LENSES = Object.freeze({
+  reveal: "build toward discovery or changed understanding",
+  journey: "show progression through stages",
+  transformation: "show a change of state, identity, perception or system",
+  interaction: "center the scene on exchange or response",
+  presentation: "structure the scene around demonstration and clarity",
+  discovery: "focus on finding, research, insight or evidence",
+  choice: "make decision and consequence central",
+  system_awakening: "show a hidden mechanism, technology or system becoming active"
+});
+
+const ADVANCED_MODULE_LENSES = Object.freeze({
+  characters: "character intent",
+  voice_over: "voice-over intent",
+  camera_details: "camera-planning intent",
+  video_prompt: "video-prompt intent",
+  branching: "branching intent",
+  cta_strategy: "CTA strategy intent",
+  image_prompt: "image-prompt intent",
+  dialogue: "dialogue intent"
+});
+
+const ROLE_DEVELOPMENT_DIRECTIVES = Object.freeze({
+  creative_director: "Develop the scene through concept, atmosphere, meaning and creative unity.",
+  commercial_strategist: "Develop the scene through audience value, retention, offer logic and a clear viewer action.",
+  cinematographer: "Develop the scene through frame, light, optics, composition and visual depth.",
+  film_director: "Develop the scene through staged action, tempo, mise-en-scene and dramatic rhythm."
+});
+
+const TYPE_DEVELOPMENT_DIRECTIVES = Object.freeze({
+  video: "Make the scene clear, actionable and usable as a video sequence.",
+  promo: "Structure the development around pain, value shift, offer logic and CTA-ready viewer action.",
+  interactive: "Make choice, consequence, viewer role and branching-ready tension central without changing the route.",
+  video_prompt: "Emphasize visible motion, camera logic, in-frame action and generation-ready continuity.",
+  image_prompt: "Concentrate the development into one strong frame with subject, composition, light and style."
+});
+
+const GOAL_DEVELOPMENT_DIRECTIVES = Object.freeze({
+  product_service: "Show why the product or service matters through concrete use and viewer action.",
+  brand_video: "Build trust and brand character through the situation, not abstract claims.",
+  promotion_ad: "Strengthen hook, retention, offer and conversion logic inside the scene.",
+  presentation_pitch: "Make the idea understandable, persuasive and clearly structured.",
+  social_media: "Protect attention with a strong hook, fast readability and visible progression.",
+  education_explainer: "Make the development sequential, clear and useful for learning.",
+  story_narrative: "Build conflict, choice, transformation and emotional arc through cause and effect.",
+  creative_concept: "Keep originality, atmosphere and symbolic meaning connected to concrete action."
+});
+
+const EMOTION_DEVELOPMENT_DIRECTIVES = Object.freeze({
+  epic: "Use scale and high stakes without losing concrete action.",
+  inspiring: "Move the scene toward hope, growth or forward motion.",
+  technological: "Make the scene feel modern, digital and precise.",
+  mysterious: "Use tension, hidden information and gradual disclosure.",
+  calm: "Keep the tempo controlled, clear and restrained.",
+  energetic: "Use impulse, speed and escalating visible action.",
+  minimalist: "Keep the scene clean, focused and precise.",
+  dreamlike: "Allow soft surrealism and symbolism while keeping the scene usable.",
+  neutral: "Use a neutral emotional tone unless the scene itself demands more."
+});
+
+const SCENE_ACTION_DEVELOPMENT_DIRECTIVES = Object.freeze({
+  reveal: "Build the development toward a specific reveal or changed understanding.",
+  journey: "Show progression through clear stages rather than a static description.",
+  transformation: "Make the change of state or perception visible in the scene.",
+  interaction: "Let the scene develop through exchange, response or system feedback.",
+  presentation: "Make the demonstration concrete and easy to follow.",
+  discovery: "Make finding, evidence or insight drive the next beat.",
+  choice: "Make the decision and its consequence drive the scene.",
+  system_awakening: "Show the hidden system or technology becoming active through visible signs."
+});
+
 // ============================================================
 // Public API
 // ============================================================
@@ -532,6 +780,7 @@ function buildSelectionInput(surfaceRequest) {
 function buildDevelopmentInput(surfaceRequest) {
   const lang = surfaceRequest.language;
   const developmentContext = buildDevelopmentContext(surfaceRequest);
+  const behaviorContext = deriveStageBehaviorDirectives(surfaceRequest, STAGES.DEVELOPMENT);
 
   return [
     {
@@ -569,6 +818,10 @@ function buildDevelopmentInput(surfaceRequest) {
                   "Do not open 3 new scene ideas.",
                   "Do not behave as Commentary Mode.",
                   "Generate concrete story material: visible action, event, conflict, character choice, reveal, state change, and cause-and-effect development.",
+                  "Apply the provided Development behavior context as content emphasis only.",
+                  "Use role, video type, goal, emotion, scene action and selected advanced modules only to sharpen Development quality.",
+                  "Behavior context must not create questions, route changes, readiness changes, patch paths, extensions data, root advanced_modules or Build blocks.",
+                  "Do not quote the behavior context in the user-facing message.",
                   "Describe what happens in the scene, not what the scene should achieve.",
                   "Development owns only these patch paths:",
                   "- scene_core.main_focus",
@@ -611,6 +864,10 @@ function buildDevelopmentInput(surfaceRequest) {
                   "Не открывай заново 3 идеи сцены.",
                   "Не переходи в Commentary Mode.",
                   "Создавай конкретный сюжетный материал: видимое действие, событие, конфликт, выбор персонажа, открытие, изменение состояния и причинно-следственное развитие.",
+                  "Применяй переданный Development behavior context только как смысловой акцент качества.",
+                  "Используй роль, тип видео, цель, эмоцию, сценическое действие и выбранные advanced-модули только для усиления качества Development.",
+                  "Behavior context не должен создавать вопросы, route changes, readiness changes, patch paths, extensions data, root advanced_modules или Build blocks.",
+                  "Не цитируй behavior context в пользовательском message.",
                   "Описывай, что происходит в сцене, а не чего сцена должна добиться.",
                   "Development владеет только этими patch paths:",
                   "- scene_core.main_focus",
@@ -637,6 +894,7 @@ function buildDevelopmentInput(surfaceRequest) {
           text:
             `Blueprint:\n${compact(surfaceRequest.blueprint)}\n\n` +
             `Development context:\n${compact(developmentContext)}\n\n` +
+            `Development behavior context:\n${compact(behaviorContext)}\n\n` +
             `User input:\n${compact(surfaceRequest.user_input)}\n\n` +
             `Advanced options:\n${compact(surfaceRequest.advanced_options)}`
         }
@@ -1435,6 +1693,244 @@ function sanitizePatchValue(value) {
 // Helpers for ideas / questions / blocks / selection
 // ============================================================
 
+
+function normalizeRole(value) {
+  return ROLE_ALIASES[toLookupKey(value)] || "creative_director";
+}
+
+function normalizeVideoType(value) {
+  return VIDEO_TYPE_ALIASES[toLookupKey(value)] || "video";
+}
+
+function normalizeGoal(value) {
+  return GOAL_ALIASES[toLookupKey(value)] || "creative_concept";
+}
+
+function normalizeEmotion(value) {
+  const key = toLookupKey(value);
+  return EMOTION_ALIASES[key] || null;
+}
+
+function normalizeSceneAction(value) {
+  const key = toLookupKey(value);
+  return SCENE_ACTION_ALIASES[key] || null;
+}
+
+function normalizeAdvancedModules(items) {
+  const modules = [];
+  const seen = new Set();
+
+  for (const item of extractAdvancedModuleCandidates(items)) {
+    const canonical = ADVANCED_MODULE_ALIASES[toLookupKey(item)];
+    if (!canonical || seen.has(canonical)) continue;
+    seen.add(canonical);
+    modules.push(canonical);
+  }
+
+  return modules;
+}
+
+function deriveStageBehaviorDirectives(surfaceRequest, stage) {
+  if (stage !== STAGES.DEVELOPMENT && stage !== EXECUTION_SURFACES.DEVELOPMENT) {
+    return null;
+  }
+
+  const blueprint = ensureObject(surfaceRequest?.blueprint);
+  const role = normalizeRole(blueprint?.meta?.scriptwriter_role);
+  const videoType = normalizeVideoType(blueprint?.meta?.video_type);
+  const goal = normalizeGoal(blueprint?.goal?.video_goal);
+  const emotion = normalizeEmotion(blueprint?.visual_direction?.emotion);
+  const sceneAction = normalizeSceneAction(
+    surfaceRequest?.ui_context?.scene_action ?? blueprint?.scene_core?.scene_action
+  );
+  const advancedModules = getSelectedAdvancedModules(surfaceRequest);
+
+  const developmentBehavior = [
+    ROLE_DEVELOPMENT_DIRECTIVES[role],
+    TYPE_DEVELOPMENT_DIRECTIVES[videoType],
+    GOAL_DEVELOPMENT_DIRECTIVES[goal],
+    emotion
+      ? EMOTION_DEVELOPMENT_DIRECTIVES[emotion]
+      : "Use neutral emotional handling; do not invent an extra emotion requirement.",
+    sceneAction ? SCENE_ACTION_DEVELOPMENT_DIRECTIVES[sceneAction] : null,
+    buildAdvancedDevelopmentDirective(advancedModules),
+    "Keep advanced options as intent only: no new questions, no new patch paths, no readiness impact, no extensions data, no root advanced_modules.",
+    "Return Development only and patch only scene_core.main_focus, narrative.scene_setup and narrative.scene_development."
+  ].filter(Boolean).slice(0, 8);
+
+  return {
+    stage: STAGES.DEVELOPMENT,
+    output_language: surfaceRequest?.language || "ru",
+    role,
+    video_type: videoType,
+    video_goal: goal,
+    emotion: emotion || null,
+    scene_action: sceneAction || null,
+    advanced_modules: advancedModules,
+    role_lens: ROLE_LENSES[role],
+    type_lens: TYPE_LENSES[videoType],
+    goal_lens: GOAL_LENSES[goal],
+    emotion_lens: emotion ? EMOTION_LENSES[emotion] : "neutral / no extra emotion bias",
+    scene_action_lens: sceneAction ? SCENE_ACTION_LENSES[sceneAction] : "none / optional",
+    advanced_lens: buildAdvancedLens(advancedModules),
+    development_behavior: developmentBehavior
+  };
+}
+
+function getSelectedAdvancedModules(surfaceRequest) {
+  const selectedFromOptions = normalizeAdvancedModules(surfaceRequest?.advanced_options?.selected);
+  const selectedFromExtensions = normalizeAdvancedModules(extractSelectedExtensions(surfaceRequest?.blueprint?.extensions));
+  return uniqueStrings([...selectedFromOptions, ...selectedFromExtensions]);
+}
+
+function extractSelectedExtensions(extensions) {
+  if (!isPlainObject(extensions)) return [];
+
+  const selected = [];
+  for (const [key, value] of Object.entries(extensions)) {
+    if (isAdvancedSelectedState(value)) {
+      selected.push(key);
+    }
+  }
+  return selected;
+}
+
+function buildAdvancedLens(modules) {
+  if (!Array.isArray(modules) || modules.length === 0) {
+    return "No selected advanced intent.";
+  }
+
+  const labels = modules
+    .map((moduleId) => ADVANCED_MODULE_LENSES[moduleId])
+    .filter(Boolean);
+
+  return `Selected modules are intent only: ${labels.join(", ")}.`;
+}
+
+function buildAdvancedDevelopmentDirective(modules) {
+  if (!Array.isArray(modules) || modules.length === 0) {
+    return null;
+  }
+
+  const moduleLabels = modules.join(", ");
+  return `Reflect selected advanced intent where it naturally helps the scene (${moduleLabels}), but do not create module data or separate result blocks.`;
+}
+
+function extractAdvancedModuleCandidates(items) {
+  if (items == null) return [];
+
+  if (Array.isArray(items)) {
+    return items.flatMap((item) => extractAdvancedModuleCandidates(item));
+  }
+
+  if (typeof items === "string") {
+    return items
+      .split(/[,\n;]/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+
+  if (!isPlainObject(items)) {
+    return [];
+  }
+
+  const nestedCandidateArrays = [
+    items.selected,
+    items.items,
+    items.modules,
+    items.enabled,
+    items.values
+  ];
+
+  const nested = nestedCandidateArrays
+    .filter((value) => Array.isArray(value))
+    .flatMap((value) => extractAdvancedModuleCandidates(value));
+
+  const entryCandidates = [];
+  for (const [key, value] of Object.entries(items)) {
+    if (key === "selected" || key === "items" || key === "modules" || key === "enabled" || key === "values") {
+      continue;
+    }
+
+    if (isAdvancedSelectedState(value)) {
+      entryCandidates.push(key);
+      continue;
+    }
+
+    if (typeof value === "string" && !isPlainObject(value)) {
+      entryCandidates.push(value);
+    }
+  }
+
+  const selfCandidate = readLookupCandidate(items);
+  return uniqueStrings([...nested, ...entryCandidates, selfCandidate].filter(Boolean));
+}
+
+function isAdvancedSelectedState(value) {
+  if (value === true) return true;
+
+  if (typeof value === "string") {
+    const key = toLookupKey(value);
+    return key === "selected" || key === "enabled" || key === "true" || key === "on";
+  }
+
+  if (!isPlainObject(value)) return false;
+
+  if (value.enabled === true || value.selected === true || value.is_selected === true) {
+    return true;
+  }
+
+  const status = toLookupKey(value.status || value.state || value.mode);
+  return status === "selected" || status === "enabled" || status === "on";
+}
+
+function toLookupKey(value) {
+  const candidate = readLookupCandidate(value);
+
+  return String(candidate || "")
+    .normalize("NFKC")
+    .trim()
+    .toLowerCase()
+    .replace(/ё/g, "е")
+    .replace(/&/g, " and ")
+    .replace(/[—–-]+/g, " ")
+    .replace(/[\/]+/g, " ")
+    .replace(/[()[\]{}'"`.,:;!?]+/g, " ")
+    .replace(/\s+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+function readLookupCandidate(value) {
+  if (!isPlainObject(value)) return value;
+
+  return (
+    value.canonical_id ??
+    value.current_code_value ??
+    value.id ??
+    value.value ??
+    value.key ??
+    value.code ??
+    value.name ??
+    value.label ??
+    value.title ??
+    ""
+  );
+}
+
+function uniqueStrings(items) {
+  const seen = new Set();
+  const result = [];
+
+  for (const item of items) {
+    if (typeof item !== "string" || !item) continue;
+    if (seen.has(item)) continue;
+    seen.add(item);
+    result.push(item);
+  }
+
+  return result;
+}
+
 function buildDevelopmentContext(surfaceRequest) {
   const blueprint = ensureObject(surfaceRequest?.blueprint);
 
@@ -1446,6 +1942,7 @@ function buildDevelopmentContext(surfaceRequest) {
     video_type: safeTrim(blueprint?.meta?.video_type),
     scriptwriter_role: safeTrim(blueprint?.meta?.scriptwriter_role),
     emotion: blueprint?.visual_direction?.emotion ?? null,
+    scene_action: safeTrim(surfaceRequest?.ui_context?.scene_action) || safeTrim(blueprint?.scene_core?.scene_action),
     known_inputs: ensureObject(blueprint?.system_state?.known_inputs),
     current_stage: blueprint?.system_state?.current_stage || STAGES.DEVELOPMENT,
     development_owns: [

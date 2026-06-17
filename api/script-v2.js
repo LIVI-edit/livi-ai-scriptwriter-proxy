@@ -340,6 +340,55 @@ const SCENE_ACTION_DEVELOPMENT_DIRECTIVES = Object.freeze({
   system_awakening: "Show the hidden system or technology becoming active through visible signs."
 });
 
+const ROLE_SCENE_IDEAS_DIRECTIVES = Object.freeze({
+  creative_director: "Generate scene ideas through concept, atmosphere, meaning and creative unity.",
+  commercial_strategist: "Generate scene ideas through audience value, retention, offer logic and a clear viewer action.",
+  cinematographer: "Generate scene ideas through frame, light, composition and visual depth.",
+  film_director: "Generate scene ideas through staged action, pace, mise-en-scene and dramatic rhythm."
+});
+
+const TYPE_SCENE_IDEAS_DIRECTIVES = Object.freeze({
+  video: "Make all 3 ideas usable as video directions with clear scene action and progression.",
+  promo: "Make all 3 ideas commercial: pain, value, offer, viewer action and ad applicability.",
+  interactive: "Make all 3 ideas interactive: viewer role, choice, consequence and branching-ready premise.",
+  video_prompt: "Make all 3 ideas generation-ready for video: visible motion, camera, in-frame action and visual sequence.",
+  image_prompt: "Make all 3 ideas single-frame focused: subject, composition, light, style and one strong image."
+});
+
+const GOAL_SCENE_IDEAS_DIRECTIVES = Object.freeze({
+  product_service: "Show product or service value through concrete use, benefit and viewer action.",
+  brand_video: "Show brand image, trust and distinctive character through the scene premise.",
+  promotion_ad: "Strengthen hook, retention, offer and conversion logic in each idea.",
+  presentation_pitch: "Make each idea clarify the pitch, argument and persuasive delivery.",
+  social_media: "Make each idea quick to read, hook-driven and retention-aware.",
+  education_explainer: "Make each idea clear, sequential and useful for explanation or learning.",
+  story_narrative: "Make each idea carry conflict, choice, transformation or emotional arc.",
+  creative_concept: "Protect originality, atmosphere and symbolic meaning in each idea."
+});
+
+const EMOTION_SCENE_IDEAS_DIRECTIVES = Object.freeze({
+  epic: "Use scale, heightened stakes and elevated dramatic weight as the emotional bias.",
+  inspiring: "Use hope, growth and forward movement as the emotional bias.",
+  technological: "Use digital clarity, innovation and modern precision as the emotional bias.",
+  mysterious: "Use hidden meaning, tension and controlled uncertainty as the emotional bias.",
+  calm: "Use soft tempo, clarity and restraint as the emotional bias.",
+  energetic: "Use speed, impulse and dynamic escalation as the emotional bias.",
+  minimalist: "Use clean, simple and precise expression as the emotional bias.",
+  dreamlike: "Use surreal, soft and symbolic perception as the emotional bias.",
+  neutral: "Use neutral emotional handling without inventing an extra emotion requirement."
+});
+
+const SCENE_ACTION_SCENE_IDEAS_DIRECTIVES = Object.freeze({
+  reveal: "Let the ideas build toward discovery or changed understanding.",
+  journey: "Let the ideas show progression through stages.",
+  transformation: "Let the ideas show a visible change of state, identity, perception or system.",
+  interaction: "Let the ideas center on exchange, response or system feedback.",
+  presentation: "Let the ideas structure the scene around demonstration and clarity.",
+  discovery: "Let the ideas focus on finding, research, insight or evidence.",
+  choice: "Let the ideas make decision and consequence central.",
+  system_awakening: "Let the ideas show a hidden mechanism, technology or system becoming active."
+});
+
 // ============================================================
 // Public API
 // ============================================================
@@ -658,6 +707,7 @@ function assertBuildRequest(surfaceRequest) {
 
 function buildSceneIdeasInput(surfaceRequest) {
   const lang = surfaceRequest.language;
+  const behaviorContext = deriveStageBehaviorDirectives(surfaceRequest, STAGES.SCENE_IDEAS);
 
   return [
     {
@@ -675,6 +725,11 @@ function buildSceneIdeasInput(surfaceRequest) {
                   "Generate exactly 3 scene ideas.",
                   "Each idea must contain: slot, title, seed_scene, why_it_fits.",
                   "Allowed slots: precise, variation, creative.",
+                  "Apply the provided Scene Ideas behavior context as content emphasis only.",
+                  "Use role, video type, goal, emotion, scene action and selected advanced modules only to sharpen the first 3 ideas.",
+                  "Advanced options are intent only: no questions, no patch paths, no readiness impact, no extensions data, no root advanced_modules and no Build blocks.",
+                  "Do not quote the behavior context in the user-facing ideas.",
+                  "Do not return questions.",
                   "Do not return blueprint patch.",
                   "No markdown."
                 ].join("\n")
@@ -685,6 +740,11 @@ function buildSceneIdeasInput(surfaceRequest) {
                   "Сгенерируй ровно 3 идеи сцены.",
                   "Каждая идея должна содержать: slot, title, seed_scene, why_it_fits.",
                   "Допустимые slot: precise, variation, creative.",
+                  "Применяй переданный Scene Ideas behavior context только как смысловой акцент качества.",
+                  "Используй роль, тип видео, цель, эмоцию, сценическое действие и выбранные advanced-модули только для усиления первых 3 идей.",
+                  "Advanced options — только intent: без questions, без новых patch paths, без readiness impact, без extensions data, без root advanced_modules и без Build blocks.",
+                  "Не цитируй behavior context в пользовательских идеях.",
+                  "Не возвращай questions.",
                   "Не возвращай blueprint patch.",
                   "Без markdown."
                 ].join("\n"))
@@ -699,6 +759,7 @@ function buildSceneIdeasInput(surfaceRequest) {
           text:
             `Blueprint:\n${compact(surfaceRequest.blueprint)}\n\n` +
             `UI context:\n${compact(surfaceRequest.ui_context)}\n\n` +
+            `Scene Ideas behavior context:\n${compact(behaviorContext)}\n\n` +
             `Advanced options:\n${compact(surfaceRequest.advanced_options)}`
         }
       ]
@@ -1731,10 +1792,59 @@ function normalizeAdvancedModules(items) {
 }
 
 function deriveStageBehaviorDirectives(surfaceRequest, stage) {
-  if (stage !== STAGES.DEVELOPMENT && stage !== EXECUTION_SURFACES.DEVELOPMENT) {
-    return null;
+  if (stage === STAGES.SCENE_IDEAS || stage === EXECUTION_SURFACES.SCENE_IDEAS) {
+    return buildSceneIdeasBehaviorContext(surfaceRequest);
   }
 
+  if (stage === STAGES.DEVELOPMENT || stage === EXECUTION_SURFACES.DEVELOPMENT) {
+    return buildDevelopmentBehaviorContext(surfaceRequest);
+  }
+
+  return null;
+}
+
+function buildSceneIdeasBehaviorContext(surfaceRequest) {
+  const blueprint = ensureObject(surfaceRequest?.blueprint);
+  const role = normalizeRole(blueprint?.meta?.scriptwriter_role);
+  const videoType = normalizeVideoType(blueprint?.meta?.video_type);
+  const goal = normalizeGoal(blueprint?.goal?.video_goal);
+  const emotion = normalizeEmotion(blueprint?.visual_direction?.emotion) || "neutral";
+  const sceneAction = normalizeSceneAction(
+    surfaceRequest?.ui_context?.scene_action ?? blueprint?.scene_core?.scene_action
+  );
+  const advancedModules = getSelectedAdvancedModules(surfaceRequest);
+
+  const sceneIdeasBehavior = [
+    ROLE_SCENE_IDEAS_DIRECTIVES[role],
+    TYPE_SCENE_IDEAS_DIRECTIVES[videoType],
+    GOAL_SCENE_IDEAS_DIRECTIVES[goal],
+    EMOTION_SCENE_IDEAS_DIRECTIVES[emotion],
+    sceneAction ? SCENE_ACTION_SCENE_IDEAS_DIRECTIVES[sceneAction] : null,
+    buildAdvancedSceneIdeasDirective(advancedModules),
+    "Keep advanced options as intent only: no new questions, no new patch paths, no readiness impact, no extensions data, no root advanced_modules and no Build blocks.",
+    "Return exactly 3 ideas in slots precise, variation and creative; do not change the response shape."
+  ].filter(Boolean).slice(0, 8);
+
+  return {
+    stage: STAGES.SCENE_IDEAS,
+    output_language: surfaceRequest?.language || "ru",
+    role,
+    video_type: videoType,
+    video_goal: goal,
+    emotion,
+    scene_action: sceneAction || null,
+    advanced_modules: advancedModules,
+    role_lens: ROLE_LENSES[role],
+    type_lens: TYPE_LENSES[videoType],
+    goal_lens: GOAL_LENSES[goal],
+    emotion_lens: EMOTION_LENSES[emotion],
+    scene_action_lens: sceneAction ? SCENE_ACTION_LENSES[sceneAction] : "none / optional",
+    advanced_lens: buildAdvancedLens(advancedModules),
+    scene_ideas_behavior: sceneIdeasBehavior
+  };
+}
+
+function buildDevelopmentBehaviorContext(surfaceRequest) {
   const blueprint = ensureObject(surfaceRequest?.blueprint);
   const role = normalizeRole(blueprint?.meta?.scriptwriter_role);
   const videoType = normalizeVideoType(blueprint?.meta?.video_type);
@@ -1805,6 +1915,15 @@ function buildAdvancedLens(modules) {
     .filter(Boolean);
 
   return `Selected modules are intent only: ${labels.join(", ")}.`;
+}
+
+function buildAdvancedSceneIdeasDirective(modules) {
+  if (!Array.isArray(modules) || modules.length === 0) {
+    return null;
+  }
+
+  const moduleLabels = modules.join(", ");
+  return `Reflect selected advanced intent where it naturally helps the first 3 ideas (${moduleLabels}), but do not create module data, questions, patch paths or result blocks.`;
 }
 
 function buildAdvancedDevelopmentDirective(modules) {

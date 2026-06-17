@@ -721,31 +721,49 @@ function buildSceneIdeasInput(surfaceRequest) {
               ? [
                   "You work only for the current stage: scene_ideas.",
                   "Return JSON only.",
-                  "Do not return route decisions.",
-                  "Generate exactly 3 scene ideas.",
+                  "Return ONLY this JSON shape:",
+                  '{ "ideas": [ { "slot": "precise", "title": "...", "seed_scene": "...", "why_it_fits": "..." }, { "slot": "variation", "title": "...", "seed_scene": "...", "why_it_fits": "..." }, { "slot": "creative", "title": "...", "seed_scene": "...", "why_it_fits": "..." } ] }',
+                  "The top-level JSON object must contain exactly one key: ideas.",
+                  "ideas must be an array.",
+                  "ideas must contain exactly 3 objects.",
                   "Each idea must contain: slot, title, seed_scene, why_it_fits.",
-                  "Allowed slots: precise, variation, creative.",
+                  "Allowed slots are exactly: precise, variation, creative.",
+                  "Do not wrap ideas inside another object.",
+                  "Do not return output.",
+                  "Do not return message.",
+                  "Do not return questions.",
+                  "Do not return patch.",
+                  "Do not return blueprint_patch.",
+                  "Do not return route decisions.",
+                  "Do not return blueprint patch.",
                   "Apply the provided Scene Ideas behavior context as content emphasis only.",
                   "Use role, video type, goal, emotion, scene action and selected advanced modules only to sharpen the first 3 ideas.",
                   "Advanced options are intent only: no questions, no patch paths, no readiness impact, no extensions data, no root advanced_modules and no Build blocks.",
                   "Do not quote the behavior context in the user-facing ideas.",
-                  "Do not return questions.",
-                  "Do not return blueprint patch.",
                   "No markdown."
                 ].join("\n")
               : [
                   "Ты работаешь только для текущего этапа: scene_ideas.",
                   "Верни только JSON.",
-                  "Не возвращай route decisions.",
-                  "Сгенерируй ровно 3 идеи сцены.",
+                  "Верни ТОЛЬКО JSON этой формы:",
+                  '{ "ideas": [ { "slot": "precise", "title": "...", "seed_scene": "...", "why_it_fits": "..." }, { "slot": "variation", "title": "...", "seed_scene": "...", "why_it_fits": "..." }, { "slot": "creative", "title": "...", "seed_scene": "...", "why_it_fits": "..." } ] }',
+                  "Верхний уровень JSON object должен содержать ровно один ключ: ideas.",
+                  "ideas должен быть массивом.",
+                  "ideas должен содержать ровно 3 объекта.",
                   "Каждая идея должна содержать: slot, title, seed_scene, why_it_fits.",
-                  "Допустимые slot: precise, variation, creative.",
+                  "Допустимые slots строго: precise, variation, creative.",
+                  "Не оборачивай ideas внутрь другого объекта.",
+                  "Не возвращай output.",
+                  "Не возвращай message.",
+                  "Не возвращай questions.",
+                  "Не возвращай patch.",
+                  "Не возвращай blueprint_patch.",
+                  "Не возвращай route decisions.",
+                  "Не возвращай blueprint patch.",
                   "Применяй переданный Scene Ideas behavior context только как смысловой акцент качества.",
                   "Используй роль, тип видео, цель, эмоцию, сценическое действие и выбранные advanced-модули только для усиления первых 3 идей.",
                   "Advanced options — только intent: без questions, без новых patch paths, без readiness impact, без extensions data, без root advanced_modules и без Build blocks.",
                   "Не цитируй behavior context в пользовательских идеях.",
-                  "Не возвращай questions.",
-                  "Не возвращай blueprint patch.",
                   "Без markdown."
                 ].join("\n"))
         }
@@ -1303,30 +1321,40 @@ async function callModel(modelInput) {
 
 function coerceSceneIdeasModelRaw(modelRaw) {
   const parsed = modelRaw && modelRaw.parsed_json;
+  const ideas = extractSceneIdeasArray(parsed);
 
-  if (Array.isArray(parsed)) {
+  if (Array.isArray(ideas)) {
     return {
       ...modelRaw,
       parsed_json: {
-        ideas: parsed
-      }
-    };
-  }
-
-  if (
-    parsed &&
-    typeof parsed === "object" &&
-    Array.isArray(parsed.scene_ideas)
-  ) {
-    return {
-      ...modelRaw,
-      parsed_json: {
-        ideas: parsed.scene_ideas
+        ideas
       }
     };
   }
 
   return modelRaw;
+}
+
+function extractSceneIdeasArray(parsed) {
+  if (Array.isArray(parsed)) {
+    return parsed;
+  }
+
+  if (!isPlainObject(parsed)) {
+    return null;
+  }
+
+  const candidates = [
+    parsed.ideas,
+    parsed.scene_ideas,
+    parsed.output?.ideas,
+    parsed.output?.scene_ideas,
+    parsed.data?.ideas,
+    parsed.result?.ideas,
+    parsed.response?.ideas
+  ];
+
+  return candidates.find(Array.isArray) || null;
 }
 
 function validateSceneIdeasResponse(modelRaw) {

@@ -564,7 +564,7 @@ async function executeRefinement(surfaceRequest) {
   const modelInput = buildRefinementInput(surfaceRequest);
   const modelRaw = await callModel(modelInput);
   const validated = validateRefinementResponse(modelRaw);
-  const normalized = normalizeRefinementResponse(validated, surfaceRequest.language, surfaceRequest.user_input);
+  const normalized = normalizeRefinementResponse(validated, surfaceRequest.language);
 
   return buildJsonEnvelope({
     stage: STAGES.REFINEMENT,
@@ -1014,16 +1014,7 @@ function buildRefinementInput(surfaceRequest) {
                   "Output fields: message, questions, patch.",
                   'Required JSON shape: { "message": "short current-stage message", "questions": [], "patch": {} }',
                   "message must always be present as a non-empty string.",
-                  "Primary behavior order: Classify user intent -> Infer -> Propose -> Patch -> Ask.",
-                  "Classify the user_input into one of these refinement intent classes before answering: delegation, concrete_patch_request, unclear_dissatisfaction, request_options, explicit_hold_alignment.",
-                  "delegation examples: 'do what you think is best', 'up to you', 'I confirm', 'everything fits'. For delegation, questions may be empty and patch may be empty or meaningful.",
-                  "concrete_patch_request examples: 'make it darker', 'add regret', 'make it more personal', 'remove drama', 'strengthen conflict', 'change the ending'. Apply a meaningful patch whenever possible; questions may be empty.",
-                  "unclear_dissatisfaction examples: 'I don't like it', 'the scene doesn't work', 'something is off', 'I don't know why', 'it doesn't hook me', 'weak scene'. Do not treat this as completion. Do not return empty questions with empty patch. Return diagnostic framing and exactly one guided question.",
-                  "request_options examples: 'suggest options', 'what options are there', 'options for refinement', 'what can be improved', 'how can we refine it', 'give directions'. Do not treat this as completion. Give concrete refinement options in message and ask one selection question.",
-                  "explicit_hold_alignment examples: 'do not move on', 'do not go to alignment', 'do not finalize', 'do not assemble', 'not yet', 'I want to keep refining'. Acknowledge the hold and ask one guided continuation question.",
-                  "For unclear_dissatisfaction, request_options, and explicit_hold_alignment: questions must contain at least one short guided question, patch may be {}, and the answer must not sound like pre-final alignment.",
-                  "For unresolved refinement interaction, do not say the scene is prepared for pre-final alignment.",
-                  "Never return next_stage, route, route_decision, go_to_alignment, go_to_build, ready_hint, or any route command.",
+                  "Primary behavior order: Infer -> Propose -> Patch -> Ask.",
                   "An empty field is not an automatic reason to ask a question.",
                   "First extract the maximum available information from Blueprint, user_input and advanced_options.",
                   "If a value can be reasonably inferred without distorting the user's intent, you must return it through patch.",
@@ -1060,16 +1051,7 @@ function buildRefinementInput(surfaceRequest) {
                   "Поля output: message, questions, patch.",
                   'Обязательная JSON-форма: { "message": "короткое сообщение текущего этапа", "questions": [], "patch": {} }',
                   "message должен присутствовать всегда и быть непустой строкой.",
-                  "Главный порядок работы: Classify user intent -> Infer -> Propose -> Patch -> Ask.",
-                  "Перед ответом классифицируй user_input как один из intent-классов: delegation, concrete_patch_request, unclear_dissatisfaction, request_options, explicit_hold_alignment.",
-                  "delegation examples: 'сделай как лучше', 'на твой вкус', 'оставляю на твой вкус', 'как считаешь лучше', 'подтверждаю', 'всё подходит'. Для delegation questions могут быть пустыми, patch может быть пустым или содержательным.",
-                  "concrete_patch_request examples: 'сделай мрачнее', 'добавь сожаление', 'сделай более личной', 'убери драму', 'усиль конфликт', 'измени финал'. Применяй meaningful patch, если это возможно; questions могут быть пустыми.",
-                  "unclear_dissatisfaction examples: 'мне не нравится', 'не нравится сцена', 'что-то не то', 'не понимаю почему', 'не цепляет', 'не работает', 'слабая сцена', 'не попадает'. Не считай это завершением. Не возвращай пустые questions вместе с пустым patch. Дай диагностический framing и ровно один guided question.",
-                  "request_options examples: 'предложи варианты', 'какие есть варианты', 'варианты доработки', 'что можно улучшить', 'как можно доработать', 'дай варианты', 'предложи направления'. Не считай это завершением. Дай конкретные варианты доработки в message и задай один вопрос на выбор направления.",
-                  "explicit_hold_alignment examples: 'не переходи', 'пока не переходи', 'не переходи к согласованию', 'не финализируй', 'не собирай', 'пока не собирай', 'хочу ещё поуточнять', 'хочу еще поуточнять', 'хочу ещё уточнить', 'хочу еще уточнить'. Подтверди остановку и задай один guided continuation question.",
-                  "Для unclear_dissatisfaction, request_options и explicit_hold_alignment: questions должен содержать минимум один короткий guided question, patch может быть {}, ответ не должен звучать как предфинальное согласование.",
-                  "Для unresolved refinement interaction не пиши, что сцена подготовлена к предфинальному согласованию.",
-                  "Никогда не возвращай next_stage, route, route_decision, go_to_alignment, go_to_build, ready_hint или любую route-команду.",
+                  "Главный порядок работы: Infer -> Propose -> Patch -> Ask.",
                   "Пустое поле не является автоматической причиной задавать вопрос.",
                   "Сначала извлекай максимум информации из Blueprint, user_input и advanced_options.",
                   "Если значение можно разумно вывести без искажения замысла пользователя, обязательно верни его через patch.",
@@ -1541,192 +1523,16 @@ function normalizeDevelopmentResponse(validated) {
   };
 }
 
-function normalizeRefinementResponse(validated, language, userInput = null) {
+function normalizeRefinementResponse(validated, language) {
   const patch = sanitizePatchByPolicy(validated.patch, EXECUTION_SURFACES.REFINEMENT);
-  const intent = detectRefinementIntent(userInput);
-  let message = normalizeRefinementPublicMessage(validated.message, language);
-  let questions = normalizeQuestions(validated.questions);
-
-  if (isUnresolvedRefinementIntent(intent) && questions.length === 0) {
-    const fallback = buildUnresolvedRefinementFallback(intent, language);
-    message = fallback.message;
-    questions = [fallback.question];
-  }
 
   return {
     output: {
-      message,
-      questions
+      message: normalizeRefinementPublicMessage(validated.message, language),
+      questions: normalizeQuestions(validated.questions)
     },
     blueprint_patch: patch
   };
-}
-
-function isUnresolvedRefinementIntent(intent) {
-  return (
-    intent === "unclear_dissatisfaction" ||
-    intent === "request_options" ||
-    intent === "explicit_hold_alignment"
-  );
-}
-
-function buildUnresolvedRefinementFallback(intent, language) {
-  const isEnglish = language === "en";
-
-  if (intent === "explicit_hold_alignment") {
-    return isEnglish
-      ? {
-          message: "Okay, I won't move to alignment yet. We'll stay in refinement and clarify the scene further.",
-          question: "What do you want to refine next: character, conflict, emotion, visual style, ending, or scene structure?"
-        }
-      : {
-          message: "Хорошо, не перехожу к согласованию. Остаёмся на уточнении и спокойно доработаем сцену.",
-          question: "Что хочешь уточнить дальше: героя, конфликт, эмоцию, визуальный стиль, финал или структуру сцены?"
-        };
-  }
-
-  if (intent === "request_options") {
-    return isEnglish
-      ? {
-          message: "Before pre-final alignment, we can refine the scene in several directions: make the conflict more personal, change the tone, clarify the character, strengthen the visual atmosphere, adjust the ending, or add a meaningful twist.",
-          question: "Which refinement direction should we choose?"
-        }
-      : {
-          message: "Перед финальным согласованием можно доработать сцену в нескольких направлениях: усилить личный конфликт, изменить тон, сделать героя конкретнее, усилить визуальную атмосферу, изменить финал или добавить смысловой поворот.",
-          question: "Какое направление выбираем для доработки?"
-        };
-  }
-
-  return isEnglish
-    ? {
-        message: "I understand that the scene does not land yet. Let's quickly identify what exactly feels wrong before moving forward.",
-        question: "What should we check first: character, conflict, emotion, visual style, pacing, or ending?"
-      }
-    : {
-        message: "Понял, что сцена пока не попадает. Давай быстро найдём, что именно не работает, прежде чем двигаться дальше.",
-        question: "Что хочешь проверить первым: героя, конфликт, эмоцию, визуальный стиль, темп или финал?"
-      };
-}
-
-function detectRefinementIntent(userInput) {
-  const text = normalizeIntentText(extractRawUserInputText(userInput));
-  if (!text) return "unknown";
-
-  if (matchesAnyIntentPattern(text, [
-    /\b(do not|don't)\s+(move on|go to alignment|finali[sz]e|assemble|build)\b/,
-    /\bnot yet\b.*\b(alignment|finali[sz]e|assemble|build)\b/,
-    /\bkeep refining\b/,
-    /\bi want to (keep refining|refine more|clarify more)\b/,
-    /не переходи/,
-    /пока не переходи/,
-    /не переходи к согласованию/,
-    /не финализируй/,
-    /не собирай/,
-    /пока не собирай/,
-    /хочу еще поуточнять/,
-    /хочу еще уточнить/,
-    /хочу поуточнять/,
-    /хочу уточнить/,
-    /еще поуточнять/,
-    /еще уточнить/
-  ])) {
-    return "explicit_hold_alignment";
-  }
-
-  if (matchesAnyIntentPattern(text, [
-    /\b(suggest|give|show|offer)\b.*\b(options?|directions?|variants?|improvements?)\b/,
-    /\bwhat (options|can be improved|could be improved)\b/,
-    /\bhow can (we|you) refine\b/,
-    /предложи.*вариант/,
-    /какие есть вариант/,
-    /вариант.*доработ/,
-    /что можно улучшить/,
-    /как можно доработать/,
-    /дай.*вариант/,
-    /предложи.*направлен/
-  ])) {
-    return "request_options";
-  }
-
-  if (matchesAnyIntentPattern(text, [
-    /\bi don't like\b/,
-    /\bdoesn't work\b/,
-    /\bsomething is off\b/,
-    /\bi don't understand why\b/,
-    /\bdoesn't hook\b/,
-    /\bweak scene\b/,
-    /мне не нравится/,
-    /не нравится сцена/,
-    /что-то не то/,
-    /что то не то/,
-    /не понимаю почему/,
-    /не цепляет/,
-    /не работает/,
-    /слабая сцена/,
-    /не попадает/
-  ])) {
-    return "unclear_dissatisfaction";
-  }
-
-  if (matchesAnyIntentPattern(text, [
-    /\b(do what you think is best|up to you|your choice|i confirm|everything fits|looks good)\b/,
-    /сделай как лучше/,
-    /на твой вкус/,
-    /оставляю на твой вкус/,
-    /как считаешь лучше/,
-    /подтверждаю/,
-    /все подходит/,
-    /всё подходит/
-  ])) {
-    return "delegation";
-  }
-
-  if (matchesAnyIntentPattern(text, [
-    /\b(make|add|remove|strengthen|change|adjust|rewrite)\b/,
-    /сделай/,
-    /добавь/,
-    /убери/,
-    /усиль/,
-    /измени/,
-    /поменяй/,
-    /перепиши/
-  ])) {
-    return "concrete_patch_request";
-  }
-
-  return "unknown";
-}
-
-function extractRawUserInputText(userInput) {
-  if (typeof userInput === "string") return userInput;
-  if (!isPlainObject(userInput)) return "";
-
-  const candidates = [
-    userInput.raw_text,
-    userInput.text,
-    userInput.message,
-    userInput.input,
-    userInput.user_input
-  ];
-
-  for (const candidate of candidates) {
-    const text = safeTrim(candidate);
-    if (text) return text;
-  }
-
-  return "";
-}
-
-function normalizeIntentText(value) {
-  return safeTrim(value)
-    .toLowerCase()
-    .replace(/ё/g, "е")
-    .replace(/[“”]/g, '"')
-    .replace(/\s+/g, " ");
-}
-
-function matchesAnyIntentPattern(text, patterns) {
-  return patterns.some((pattern) => pattern.test(text));
 }
 
 function normalizeRefinementPublicMessage(message, language) {

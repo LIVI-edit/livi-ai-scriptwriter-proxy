@@ -4,6 +4,43 @@
 
 const OPENAI_URL = "https://api.openai.com/v1/responses";
 const MODEL = process.env.OPENAI_MODEL || "gpt-4.1-mini";
+const resultSchemaEngine = requireResultSchemaEngineCore();
+
+function requireResultSchemaEngineCore() {
+  const candidatePaths = [
+    "./resultSchemaEngine.js",
+    "../resultSchemaEngine.js"
+  ];
+  let lastError = null;
+
+  for (const candidatePath of candidatePaths) {
+    try {
+      const core = require(candidatePath);
+      if (core && typeof core === "object") {
+        const requiredMethods = [
+          "buildResultSchemaFromBlueprint",
+          "getAllowedBlocks",
+          "getForbiddenBlocks",
+          "normalizeResultBlocksBySchema"
+        ];
+
+        for (const method of requiredMethods) {
+          if (typeof core[method] !== "function") {
+            throw new Error(`Result Schema core method is missing: ${method}`);
+          }
+        }
+
+        return core;
+      }
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw new Error(
+    `Canonical Result Schema core is unavailable: ${lastError?.message || "unknown error"}`
+  );
+}
 
 const EXECUTION_SURFACES = Object.freeze({
   // Technical request surfaces. These are not Blueprint product stages.
@@ -65,30 +102,6 @@ const REFINEMENT_ALLOWED_PATCH_PATHS = new Set([
 ]);
 
 const ALIGNMENT_ALLOWED_PATCH_PATHS = new Set([]);
-
-const BUILD_BLOCK_CATALOG = Object.freeze([
-  "preview",
-  "video_overview",
-  "visual_emotional_direction",
-  "scene_description",
-  "story_concept",
-  "full_script",
-  "scene_breakdown",
-  "prompt",
-  "production_notes",
-  "director_notes",
-  "characters",
-  "dialogue",
-  "voice_over",
-  "camera_direction",
-  "cta_strategy",
-  "timing",
-  "branching",
-  "visual_style_extra",
-  "image_prompt_variations",
-  "video_prompt_variations"
-]);
-
 
 // Development-only Behavior Directives v1.1
 // Field-scoped canonicalization only. Do not replace with a shared normalizeValue().
@@ -598,9 +611,14 @@ async function executeAlignment(surfaceRequest) {
 async function executeBuildSurface(surfaceRequest) {
   assertBuildRequest(surfaceRequest);
 
-  const resultSchema = safeResultSchemaSnapshot(surfaceRequest?.meta?.result_schema);
+  const appliedPlanContext = surfaceRequest?.meta?.applied_plan_context || {};
+  const resultSchema = resultSchemaEngine.buildResultSchemaFromBlueprint(
+    surfaceRequest.blueprint,
+    { appliedPlanContext }
+  );
+  const allowedBlocks = resultSchemaEngine.getAllowedBlocks(resultSchema);
 
-  if (!hasBuildAllowedBlocks(resultSchema)) {
+  if (!allowedBlocks.length) {
     return buildBuildSurfaceErrorEnvelope({
       surfaceRequest,
       code: "BUILD_RESULT_SCHEMA_EMPTY",
@@ -1157,11 +1175,8 @@ function buildAlignmentInput(surfaceRequest) {
   ];
 }
 
-function buildBuildInput(surfaceRequest, resultSchemaSnapshot = null) {
+function buildBuildInput(surfaceRequest, resultSchema) {
   const lang = surfaceRequest.language;
-  const resultSchema = isPlainObject(resultSchemaSnapshot)
-    ? resultSchemaSnapshot
-    : safeResultSchemaSnapshot(surfaceRequest?.meta?.result_schema);
   const schemaPrompt = buildBuildSchemaPrompt(resultSchema, lang);
 
   return [
@@ -1631,7 +1646,10 @@ function isForbiddenAlignmentPublicMessage(message) {
 function normalizeBuildResponse(validated, resultSchema = {}) {
   return {
     output: {
-      blocks: normalizeBlocks(validated.blocks, getBuildAllowedBlocks(resultSchema))
+      blocks: resultSchemaEngine.normalizeResultBlocksBySchema(
+        resultSchema,
+        validated.blocks
+      )
     }
   };
 }
@@ -2318,45 +2336,6 @@ function normalizeQuestions(value) {
     .slice(0, 3);
 }
 
-function normalizeBlocks(blocks, allowedBlocks = null) {
-  const next = {};
-  const allowedSet = Array.isArray(allowedBlocks)
-    ? new Set(allowedBlocks)
-    : null;
-
-  for (const [key, value] of Object.entries(ensureObject(blocks))) {
-    if (allowedSet && !allowedSet.has(key)) continue;
-
-    if (typeof value === "string") {
-      const trimmed = value.trim();
-      if (!trimmed) continue;
-      next[key] = trimmed;
-      continue;
-    }
-
-    if (
-      isPlainObject(value) &&
-      typeof value.text === "string"
-    ) {
-      const trimmed = value.text.trim();
-      if (!trimmed) continue;
-      next[key] = trimmed;
-    }
-  }
-
-  return next;
-}
-
-function getBuildAllowedBlocks(resultSchema) {
-  return Array.isArray(resultSchema?.blocks)
-    ? resultSchema.blocks.map((block) => safeTrim(block)).filter(Boolean)
-    : [];
-}
-
-function hasBuildAllowedBlocks(resultSchema) {
-  return getBuildAllowedBlocks(resultSchema).length > 0;
-}
-
 function hasNonEmptyBuildBlocks(blocks) {
   return Object.keys(ensureObject(blocks)).length > 0;
 }
@@ -2401,62 +2380,14 @@ function extractRawSelectionText(userInput) {
   return userInput.raw_text.trim();
 }
 
-function safeResultSchemaSnapshot(value) {
-  const rawSchema = isPlainObject(value) ? value : {};
-  const sanitized = sanitizeResultSchemaValue(rawSchema);
-  const schema = isPlainObject(sanitized) ? sanitized : {};
-
-  if (Array.isArray(schema.blocks)) {
-    schema.blocks = schema.blocks
-      .map((block) => safeTrim(block))
-      .filter(Boolean);
-  } else {
-    schema.blocks = [];
-  }
-
-  if (!isPlainObject(schema.block_character_budget)) {
-    schema.block_character_budget = {};
-  }
-
-  return schema;
-}
-
-function sanitizeResultSchemaValue(value) {
-  if (value == null) {
-    return undefined;
-  }
-
-  if (Array.isArray(value)) {
-    return value
-      .map((item) => sanitizeResultSchemaValue(item))
-      .filter((item) => item !== undefined);
-  }
-
-  if (isPlainObject(value)) {
-    const next = {};
-
-    for (const [key, item] of Object.entries(value)) {
-      const sanitized = sanitizeResultSchemaValue(item);
-      if (sanitized !== undefined) {
-        next[key] = sanitized;
-      }
-    }
-
-    return next;
-  }
-
-  return value;
-}
-
 function buildBuildSchemaPrompt(resultSchema, language) {
-  const allowedBlocks = Array.isArray(resultSchema.blocks)
-    ? resultSchema.blocks
-    : [];
-  const forbiddenBlocks = BUILD_BLOCK_CATALOG.filter(
-    (block) => !allowedBlocks.includes(block)
-  );
+  const allowedBlocks = resultSchemaEngine.getAllowedBlocks(resultSchema);
+  const forbiddenBlocks = resultSchemaEngine.getForbiddenBlocks(resultSchema);
+  const characterBudget = isPlainObject(resultSchema?.block_character_budget)
+    ? resultSchema.block_character_budget
+    : {};
   const compositionLines = allowedBlocks.map((block, index) => {
-    const budget = resultSchema.block_character_budget[block];
+    const budget = characterBudget[block];
     if (typeof budget === "number" && budget > 0) {
       return `${index + 1}. ${block} — target_char_budget=${budget}`;
     }

@@ -5,18 +5,15 @@
 const OPENAI_URL = "https://api.openai.com/v1/responses";
 const MODEL = process.env.OPENAI_MODEL || "gpt-4.1-mini";
 
-const STAGES = {
+const EXECUTION_SURFACES = Object.freeze({
+  // Technical request surfaces. These are not Blueprint product stages.
   SCENE_IDEAS: "scene_ideas",
   SELECTION: "selection",
   DEVELOPMENT: "development",
   REFINEMENT: "refinement",
-  ALIGNMENT: "alignment"
-};
-
-const EXECUTION_SURFACES = {
-  ...STAGES,
+  ALIGNMENT: "alignment",
   BUILD: "build"
-};
+});
 
 const STATUSES = {
   OK: "ok",
@@ -472,15 +469,15 @@ async function executeSurface(surfaceRequest) {
   }
 
   switch (stage) {
-    case STAGES.SCENE_IDEAS:
+    case EXECUTION_SURFACES.SCENE_IDEAS:
       return executeSceneIdeas(surfaceRequest);
-    case STAGES.SELECTION:
+    case EXECUTION_SURFACES.SELECTION:
       return executeSelection(surfaceRequest);
-    case STAGES.DEVELOPMENT:
+    case EXECUTION_SURFACES.DEVELOPMENT:
       return executeDevelopment(surfaceRequest);
-    case STAGES.REFINEMENT:
+    case EXECUTION_SURFACES.REFINEMENT:
       return executeRefinement(surfaceRequest);
-    case STAGES.ALIGNMENT:
+    case EXECUTION_SURFACES.ALIGNMENT:
       return executeAlignment(surfaceRequest);
     default:
       return buildErrorEnvelope({
@@ -513,7 +510,7 @@ async function executeSceneIdeas(surfaceRequest) {
   const normalized = normalizeSceneIdeasResponse(validated, surfaceRequest);
 
   return buildJsonEnvelope({
-    stage: STAGES.SCENE_IDEAS,
+    stage: EXECUTION_SURFACES.SCENE_IDEAS,
     status: STATUSES.OK,
     output: normalized.output,
     meta: buildMeta(surfaceRequest, { patch_allowed: false }),
@@ -531,7 +528,7 @@ async function executeSelection(surfaceRequest) {
   const normalized = normalizeSelectionResponse(validated, surfaceRequest);
 
   return buildJsonEnvelope({
-    stage: STAGES.SELECTION,
+    stage: EXECUTION_SURFACES.SELECTION,
     status: STATUSES.OK,
     output: normalized.output,
     meta: buildMeta(surfaceRequest, { patch_allowed: true }),
@@ -549,7 +546,7 @@ async function executeDevelopment(surfaceRequest) {
   const normalized = normalizeDevelopmentResponse(validated);
 
   return buildJsonEnvelope({
-    stage: STAGES.DEVELOPMENT,
+    stage: EXECUTION_SURFACES.DEVELOPMENT,
     status: normalized.status,
     output: normalized.output,
     meta: buildMeta(surfaceRequest, { patch_allowed: true }),
@@ -567,7 +564,7 @@ async function executeRefinement(surfaceRequest) {
   const normalized = normalizeRefinementResponse(validated, surfaceRequest.language);
 
   return buildJsonEnvelope({
-    stage: STAGES.REFINEMENT,
+    stage: EXECUTION_SURFACES.REFINEMENT,
     status: STATUSES.OK,
     output: normalized.output,
     meta: buildMeta(surfaceRequest, { patch_allowed: true }),
@@ -585,7 +582,7 @@ async function executeAlignment(surfaceRequest) {
   const normalized = normalizeAlignmentResponse(validated, surfaceRequest.language);
 
   return buildJsonEnvelope({
-    stage: STAGES.ALIGNMENT,
+    stage: EXECUTION_SURFACES.ALIGNMENT,
     status: STATUSES.OK,
     output: normalized.output,
     meta: buildMeta(surfaceRequest, { patch_allowed: false }),
@@ -668,8 +665,9 @@ function assertSceneIdeasRequest(surfaceRequest) {
 
 function assertSelectionRequest(surfaceRequest) {
   const selectedScene = extractSelectedScene(surfaceRequest.user_input);
-  if (!selectedScene) {
-    throw new Error("Missing selected scene for selection");
+  const rawText = extractRawSelectionText(surfaceRequest.user_input);
+  if (!selectedScene && !rawText) {
+    throw new Error("Missing selection input");
   }
 }
 
@@ -707,7 +705,7 @@ function assertBuildRequest(surfaceRequest) {
 
 function buildSceneIdeasInput(surfaceRequest) {
   const lang = surfaceRequest.language;
-  const behaviorContext = deriveStageBehaviorDirectives(surfaceRequest, STAGES.SCENE_IDEAS);
+  const behaviorContext = deriveStageBehaviorDirectives(surfaceRequest, EXECUTION_SURFACES.SCENE_IDEAS);
 
   return [
     {
@@ -859,7 +857,7 @@ function buildSelectionInput(surfaceRequest) {
 function buildDevelopmentInput(surfaceRequest) {
   const lang = surfaceRequest.language;
   const developmentContext = buildDevelopmentContext(surfaceRequest);
-  const behaviorContext = deriveStageBehaviorDirectives(surfaceRequest, STAGES.DEVELOPMENT);
+  const behaviorContext = deriveStageBehaviorDirectives(surfaceRequest, EXECUTION_SURFACES.DEVELOPMENT);
 
   return [
     {
@@ -984,18 +982,6 @@ function buildDevelopmentInput(surfaceRequest) {
 
 function buildRefinementInput(surfaceRequest) {
   const lang = surfaceRequest.language;
-  const refinementFieldValues = [
-    ["goal.video_topic", surfaceRequest.blueprint?.goal?.video_topic],
-    ["goal.video_goal", surfaceRequest.blueprint?.goal?.video_goal],
-    ["scene_core.seed_scene", surfaceRequest.blueprint?.scene_core?.seed_scene],
-    ["narrative.scene_setup", surfaceRequest.blueprint?.narrative?.scene_setup],
-    ["narrative.scene_development", surfaceRequest.blueprint?.narrative?.scene_development],
-    ["visual_direction.emotion", surfaceRequest.blueprint?.visual_direction?.emotion]
-  ];
-  const missingRefinementFields = refinementFieldValues
-    .filter(([, value]) => !safeTrim(value))
-    .map(([path]) => path);
-
   return [
     {
       role: "system",
@@ -1089,7 +1075,6 @@ function buildRefinementInput(surfaceRequest) {
           type: "input_text",
           text:
             `Blueprint:\n${compact(surfaceRequest.blueprint)}\n\n` +
-            `Candidate refinement fields to close by inference or patch:\n${compact(missingRefinementFields)}\n\n` +
             `User input:\n${compact(surfaceRequest.user_input)}\n\n` +
             `Advanced options:\n${compact(surfaceRequest.advanced_options)}`
         }
@@ -1358,7 +1343,7 @@ function extractSceneIdeasArray(parsed) {
 }
 
 function validateSceneIdeasResponse(modelRaw) {
-  const data = validateBaseModelObject(modelRaw, STAGES.SCENE_IDEAS);
+  const data = validateBaseModelObject(modelRaw, EXECUTION_SURFACES.SCENE_IDEAS);
 
   if (!Array.isArray(data.ideas)) {
     throw new Error("scene_ideas model response must contain ideas array");
@@ -1368,7 +1353,7 @@ function validateSceneIdeasResponse(modelRaw) {
 }
 
 function validateSelectionResponse(modelRaw) {
-  const data = validateBaseModelObject(modelRaw, STAGES.SELECTION);
+  const data = validateBaseModelObject(modelRaw, EXECUTION_SURFACES.SELECTION);
 
   if (typeof data.message !== "string" || !data.message.trim()) {
     throw new Error("selection model response must contain message");
@@ -1386,7 +1371,7 @@ function validateSelectionResponse(modelRaw) {
 }
 
 function validateDevelopmentResponse(modelRaw) {
-  const data = validateBaseModelObject(modelRaw, STAGES.DEVELOPMENT);
+  const data = validateBaseModelObject(modelRaw, EXECUTION_SURFACES.DEVELOPMENT);
 
   rejectForbiddenDevelopmentTopLevelKeys(data);
 
@@ -1411,7 +1396,7 @@ function validateDevelopmentResponse(modelRaw) {
 }
 
 function validateRefinementResponse(modelRaw) {
-  const data = validateBaseModelObject(modelRaw, STAGES.REFINEMENT);
+  const data = validateBaseModelObject(modelRaw, EXECUTION_SURFACES.REFINEMENT);
 
   if (typeof data.message !== "string" || !data.message.trim()) {
     throw new Error("refinement model response must contain message");
@@ -1429,7 +1414,7 @@ function validateRefinementResponse(modelRaw) {
 }
 
 function validateAlignmentResponse(modelRaw) {
-  const data = validateBaseModelObject(modelRaw, STAGES.ALIGNMENT);
+  const data = validateBaseModelObject(modelRaw, EXECUTION_SURFACES.ALIGNMENT);
   const language = detectLanguageFromModelRaw(modelRaw);
 
   if (typeof data.message !== "string" || !data.message.trim()) {
@@ -1490,6 +1475,7 @@ function normalizeSceneIdeasResponse(validated, surfaceRequest) {
 
 function normalizeSelectionResponse(validated, surfaceRequest) {
   const selectedScene = extractSelectedScene(surfaceRequest.user_input);
+  const modelPatch = sanitizePatchByPolicy(validated.patch, EXECUTION_SURFACES.SELECTION);
   const normalizedQuestions = normalizeQuestions(validated.questions);
   const questions = normalizedQuestions.length
     ? normalizedQuestions.slice(0, 1)
@@ -1502,7 +1488,7 @@ function normalizeSelectionResponse(validated, surfaceRequest) {
     },
     blueprint_patch: selectedScene
       ? { "scene_core.seed_scene": selectedScene }
-      : {}
+      : modelPatch
   };
 }
 
@@ -1819,12 +1805,12 @@ function normalizeAdvancedModules(items) {
   return modules;
 }
 
-function deriveStageBehaviorDirectives(surfaceRequest, stage) {
-  if (stage === STAGES.SCENE_IDEAS || stage === EXECUTION_SURFACES.SCENE_IDEAS) {
+function deriveStageBehaviorDirectives(surfaceRequest, surface) {
+  if (surface === EXECUTION_SURFACES.SCENE_IDEAS) {
     return buildSceneIdeasBehaviorContext(surfaceRequest);
   }
 
-  if (stage === STAGES.DEVELOPMENT || stage === EXECUTION_SURFACES.DEVELOPMENT) {
+  if (surface === EXECUTION_SURFACES.DEVELOPMENT) {
     return buildDevelopmentBehaviorContext(surfaceRequest);
   }
 
@@ -1854,7 +1840,7 @@ function buildSceneIdeasBehaviorContext(surfaceRequest) {
   ].filter(Boolean).slice(0, 8);
 
   return {
-    stage: STAGES.SCENE_IDEAS,
+    stage: EXECUTION_SURFACES.SCENE_IDEAS,
     output_language: surfaceRequest?.language || "ru",
     role,
     video_type: videoType,
@@ -1897,7 +1883,7 @@ function buildDevelopmentBehaviorContext(surfaceRequest) {
   ].filter(Boolean).slice(0, 8);
 
   return {
-    stage: STAGES.DEVELOPMENT,
+    stage: EXECUTION_SURFACES.DEVELOPMENT,
     output_language: surfaceRequest?.language || "ru",
     role,
     video_type: videoType,
@@ -2091,7 +2077,7 @@ function buildDevelopmentContext(surfaceRequest) {
     emotion: blueprint?.visual_direction?.emotion ?? null,
     scene_action: safeTrim(surfaceRequest?.ui_context?.scene_action) || safeTrim(blueprint?.scene_core?.scene_action),
     known_inputs: ensureObject(blueprint?.system_state?.known_inputs),
-    current_stage: blueprint?.system_state?.current_stage || STAGES.DEVELOPMENT,
+    current_stage: blueprint?.system_state?.current_stage || EXECUTION_SURFACES.DEVELOPMENT,
     development_owns: [
       "scene_core.main_focus",
       "narrative.scene_setup",
@@ -2401,6 +2387,18 @@ function extractSelectedScene(userInput) {
   }
 
   return userInput.seed_scene.trim();
+}
+
+function extractRawSelectionText(userInput) {
+  if (!isPlainObject(userInput)) {
+    return "";
+  }
+
+  if (typeof userInput.raw_text !== "string") {
+    return "";
+  }
+
+  return userInput.raw_text.trim();
 }
 
 function safeResultSchemaSnapshot(value) {

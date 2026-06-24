@@ -66,30 +66,6 @@ const REFINEMENT_ALLOWED_PATCH_PATHS = new Set([
 
 const ALIGNMENT_ALLOWED_PATCH_PATHS = new Set([]);
 
-const BUILD_BLOCK_CATALOG = Object.freeze([
-  "preview",
-  "video_overview",
-  "visual_emotional_direction",
-  "scene_description",
-  "story_concept",
-  "full_script",
-  "scene_breakdown",
-  "prompt",
-  "production_notes",
-  "director_notes",
-  "characters",
-  "dialogue",
-  "voice_over",
-  "camera_direction",
-  "cta_strategy",
-  "timing",
-  "branching",
-  "visual_style_extra",
-  "image_prompt_variations",
-  "video_prompt_variations"
-]);
-
-
 // Development-only Behavior Directives v1.1
 // Field-scoped canonicalization only. Do not replace with a shared normalizeValue().
 const ROLE_ALIASES = Object.freeze({
@@ -598,7 +574,19 @@ async function executeAlignment(surfaceRequest) {
 async function executeBuildSurface(surfaceRequest) {
   assertBuildRequest(surfaceRequest);
 
-  const resultSchema = safeResultSchemaSnapshot(surfaceRequest?.meta?.result_schema);
+  const schemaValidation = validateBuildResultSchemaContext(
+    surfaceRequest?.meta?.result_schema
+  );
+
+  if (schemaValidation.ok !== true) {
+    return buildBuildSurfaceErrorEnvelope({
+      surfaceRequest,
+      code: schemaValidation.code,
+      message: schemaValidation.message,
+    });
+  }
+
+  const resultSchema = safeResultSchemaSnapshot(surfaceRequest.meta.result_schema);
 
   if (!hasBuildAllowedBlocks(resultSchema)) {
     return buildBuildSurfaceErrorEnvelope({
@@ -1159,9 +1147,10 @@ function buildAlignmentInput(surfaceRequest) {
 
 function buildBuildInput(surfaceRequest, resultSchemaSnapshot = null) {
   const lang = surfaceRequest.language;
-  const resultSchema = isPlainObject(resultSchemaSnapshot)
-    ? resultSchemaSnapshot
-    : safeResultSchemaSnapshot(surfaceRequest?.meta?.result_schema);
+  if (!isPlainObject(resultSchemaSnapshot)) {
+    throw new Error("Build result schema snapshot is required.");
+  }
+  const resultSchema = resultSchemaSnapshot;
   const schemaPrompt = buildBuildSchemaPrompt(resultSchema, lang);
 
   return [
@@ -1432,8 +1421,41 @@ function validateAlignmentResponse(modelRaw) {
   return data;
 }
 
+function assertExactBuildTopLevelContract(data) {
+  const keys = Object.keys(data);
+  const forbiddenKeys = new Set([
+    "final_result",
+    "next_stage",
+    "route_decision",
+    "ready_hint",
+    "response_stage",
+    "system_state",
+    "ready_for_final_assembly",
+    "required_inputs_complete",
+    "minimum_usable_readiness",
+    "meta",
+    "result_schema",
+    "message",
+    "questions",
+    "blueprint_patch",
+    "output",
+  ]);
+
+  for (const key of keys) {
+    if (forbiddenKeys.has(key)) {
+      throw new Error(`Forbidden build response key returned by model: ${key}`);
+    }
+  }
+
+  if (keys.length !== 1 || keys[0] !== "blocks") {
+    throw new Error("build model response must contain exactly one top-level key: blocks");
+  }
+}
+
 function validateBuildResponse(modelRaw) {
   const data = validateBaseModelObject(modelRaw, EXECUTION_SURFACES.BUILD);
+
+  assertExactBuildTopLevelContract(data);
 
   if (!isPlainObject(data.blocks)) {
     throw new Error("build model response must contain blocks object");
@@ -2401,60 +2423,163 @@ function extractRawSelectionText(userInput) {
   return userInput.raw_text.trim();
 }
 
-function safeResultSchemaSnapshot(value) {
-  const rawSchema = isPlainObject(value) ? value : {};
-  const sanitized = sanitizeResultSchemaValue(rawSchema);
-  const schema = isPlainObject(sanitized) ? sanitized : {};
-
-  if (Array.isArray(schema.blocks)) {
-    schema.blocks = schema.blocks
-      .map((block) => safeTrim(block))
-      .filter(Boolean);
-  } else {
-    schema.blocks = [];
+function validateBuildResultSchemaContext(rawSchema) {
+  if (rawSchema == null) {
+    return {
+      ok: false,
+      code: "BUILD_RESULT_SCHEMA_MISSING",
+      message: "Build result schema is missing."
+    };
   }
 
-  if (!isPlainObject(schema.block_character_budget)) {
-    schema.block_character_budget = {};
+  if (!isPlainObject(rawSchema)) {
+    return {
+      ok: false,
+      code: "BUILD_RESULT_SCHEMA_INVALID",
+      message: "Build result schema must be an object."
+    };
   }
 
-  return schema;
-}
+  const requiredKeys = [
+    "version",
+    "plan_tier",
+    "video_type",
+    "density_mode",
+    "text_budget_total",
+    "blocks",
+    "block_character_budget",
+  ];
 
-function sanitizeResultSchemaValue(value) {
-  if (value == null) {
-    return undefined;
+  const allowedKeys = new Set([
+    ...requiredKeys,
+    "selected_advanced_options",
+  ]);
+
+  for (const key of requiredKeys) {
+    if (!Object.prototype.hasOwnProperty.call(rawSchema, key)) {
+      return {
+        ok: false,
+        code: "BUILD_RESULT_SCHEMA_INVALID",
+        message: `Build result schema key is missing: ${key}`
+      };
+    }
   }
 
-  if (Array.isArray(value)) {
-    return value
-      .map((item) => sanitizeResultSchemaValue(item))
-      .filter((item) => item !== undefined);
+  for (const key of Object.keys(rawSchema)) {
+    if (!allowedKeys.has(key)) {
+      return {
+        ok: false,
+        code: "BUILD_RESULT_SCHEMA_INVALID",
+        message: `Build result schema contains forbidden key: ${key}`
+      };
+    }
   }
 
-  if (isPlainObject(value)) {
-    const next = {};
+  const blocks = Array.isArray(rawSchema.blocks)
+    ? rawSchema.blocks.map((block) => safeTrim(block)).filter(Boolean)
+    : [];
 
-    for (const [key, item] of Object.entries(value)) {
-      const sanitized = sanitizeResultSchemaValue(item);
-      if (sanitized !== undefined) {
-        next[key] = sanitized;
-      }
+  if (!blocks.length) {
+    return {
+      ok: false,
+      code: "BUILD_RESULT_SCHEMA_INVALID",
+      message: "Build result schema must contain a non-empty blocks array."
+    };
+  }
+
+  if (new Set(blocks).size !== blocks.length) {
+    return {
+      ok: false,
+      code: "BUILD_RESULT_SCHEMA_INVALID",
+      message: "Build result schema blocks must be unique."
+    };
+  }
+
+  const textBudgetTotal = Number(rawSchema.text_budget_total);
+  if (!Number.isFinite(textBudgetTotal) || textBudgetTotal <= 0) {
+    return {
+      ok: false,
+      code: "BUILD_RESULT_SCHEMA_INVALID",
+      message: "Build result schema text_budget_total must be a positive number."
+    };
+  }
+
+  if (!isPlainObject(rawSchema.block_character_budget)) {
+    return {
+      ok: false,
+      code: "BUILD_RESULT_SCHEMA_INVALID",
+      message: "Build result schema block_character_budget must be an object."
+    };
+  }
+
+  for (const [blockKey, budget] of Object.entries(rawSchema.block_character_budget)) {
+    const normalizedBlockKey = safeTrim(blockKey);
+
+    if (!blocks.includes(normalizedBlockKey)) {
+      return {
+        ok: false,
+        code: "BUILD_RESULT_SCHEMA_INVALID",
+        message: `Build result schema budget key is not allowed: ${blockKey}`
+      };
     }
 
-    return next;
+    const numericBudget = Number(budget);
+    if (
+      !Number.isFinite(numericBudget) ||
+      numericBudget <= 0 ||
+      !Number.isInteger(numericBudget)
+    ) {
+      return {
+        ok: false,
+        code: "BUILD_RESULT_SCHEMA_INVALID",
+        message: `Build result schema budget must be a positive integer: ${blockKey}`
+      };
+    }
   }
 
-  return value;
+  if (
+    Object.prototype.hasOwnProperty.call(rawSchema, "selected_advanced_options") &&
+    !Array.isArray(rawSchema.selected_advanced_options)
+  ) {
+    return {
+      ok: false,
+      code: "BUILD_RESULT_SCHEMA_INVALID",
+      message: "Build result schema selected_advanced_options must be an array."
+    };
+  }
+
+  return { ok: true };
+}
+
+function safeResultSchemaSnapshot(value) {
+  const schema = value;
+  const blocks = schema.blocks.map((block) => safeTrim(block)).filter(Boolean);
+  const blockCharacterBudget = {};
+
+  for (const block of blocks) {
+    if (Object.prototype.hasOwnProperty.call(schema.block_character_budget, block)) {
+      blockCharacterBudget[block] = Math.trunc(Number(schema.block_character_budget[block]));
+    }
+  }
+
+  return {
+    version: safeTrim(schema.version) || "v1",
+    plan_tier: safeTrim(schema.plan_tier) || "free",
+    video_type: safeTrim(schema.video_type) || "video",
+    density_mode: safeTrim(schema.density_mode) || "compact",
+    text_budget_total: Math.trunc(Number(schema.text_budget_total)),
+    blocks,
+    block_character_budget: blockCharacterBudget,
+    selected_advanced_options: Array.isArray(schema.selected_advanced_options)
+      ? schema.selected_advanced_options.map((item) => safeTrim(item)).filter(Boolean)
+      : [],
+  };
 }
 
 function buildBuildSchemaPrompt(resultSchema, language) {
   const allowedBlocks = Array.isArray(resultSchema.blocks)
     ? resultSchema.blocks
     : [];
-  const forbiddenBlocks = BUILD_BLOCK_CATALOG.filter(
-    (block) => !allowedBlocks.includes(block)
-  );
   const compositionLines = allowedBlocks.map((block, index) => {
     const budget = resultSchema.block_character_budget[block];
     if (typeof budget === "number" && budget > 0) {
@@ -2472,7 +2597,7 @@ function buildBuildSchemaPrompt(resultSchema, language) {
       `- density_mode: ${resultSchema.density_mode}`,
       `- text_budget_total: ${resultSchema.text_budget_total}`,
       `- allowed_blocks: ${allowedBlocks.join(", ") || "none"}`,
-      `- forbidden_blocks: ${forbiddenBlocks.join(", ") || "none"}`,
+      "- Any block not listed in allowed_blocks is forbidden.",
       "- expected_result_composition:",
       ...compositionLines,
       "- Return blocks only under blocks.",
@@ -2492,7 +2617,7 @@ function buildBuildSchemaPrompt(resultSchema, language) {
     `- density_mode: ${resultSchema.density_mode}`,
     `- text_budget_total: ${resultSchema.text_budget_total}`,
     `- allowed_blocks: ${allowedBlocks.join(", ") || "none"}`,
-    `- forbidden_blocks: ${forbiddenBlocks.join(", ") || "none"}`,
+    "- Любой блок, которого нет в allowed_blocks, запрещён.",
     "- expected_result_composition:",
     ...compositionLines,
     "- Возвращай блоки только внутри blocks.",

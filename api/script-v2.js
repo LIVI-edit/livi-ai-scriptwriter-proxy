@@ -81,12 +81,34 @@ const DEVELOPMENT_ALLOWED_PATCH_PATHS = new Set([
 ]);
 
 const REFINEMENT_ALLOWED_PATCH_PATHS = new Set([
-  "goal.video_topic",
-  "goal.video_goal",
-  "scene_core.seed_scene",
+  "scene_core.main_focus",
   "narrative.scene_setup",
   "narrative.scene_development",
-  "visual_direction.emotion"
+  "visual_direction.emotion",
+  "visual_direction.visual_style",
+  "visual_direction.atmosphere",
+  "visual_direction.lighting",
+  "visual_direction.color_palette",
+  "visual_direction.composition_notes",
+  "participants.main_character",
+  "participants.secondary_characters",
+  "participants.product_entity",
+  "participants.narrator",
+  "environment.location",
+  "environment.time_of_day",
+  "environment.setting_style",
+  "environment.world_details",
+  "environment.scale",
+  "technical_layer.camera_direction",
+  "technical_layer.shot_type",
+  "technical_layer.motion",
+  "technical_layer.timing_structure",
+  "technical_layer.edit_logic",
+  "marketing_layer.message",
+  "marketing_layer.product_focus",
+  "marketing_layer.cta",
+  "marketing_layer.conversion_goal",
+  "marketing_layer.brand_tone"
 ]);
 
 const ALIGNMENT_ALLOWED_PATCH_PATHS = new Set([]);
@@ -568,7 +590,12 @@ async function executeRefinement(surfaceRequest) {
     stage: EXECUTION_SURFACES.REFINEMENT,
     status: STATUSES.OK,
     output: normalized.output,
-    meta: buildMeta(surfaceRequest, { patch_allowed: true }),
+    meta: buildMeta(surfaceRequest, {
+      patch_allowed: true,
+      base_blueprint_revision_echo: normalizeBaseBlueprintRevisionEcho(
+        surfaceRequest?.meta?.base_blueprint_revision
+      )
+    }),
     blueprint_patch: normalized.blueprint_patch,
     error: null
   });
@@ -993,6 +1020,12 @@ function buildDevelopmentInput(surfaceRequest) {
   ];
 }
 
+function formatAllowedPatchPathsForPrompt(allowedPaths) {
+  return Array.from(allowedPaths)
+    .map((path) => `- ${path}`)
+    .join("\n");
+}
+
 function buildRefinementInput(surfaceRequest) {
   const lang = surfaceRequest.language;
   return [
@@ -1022,9 +1055,9 @@ function buildRefinementInput(surfaceRequest) {
                   "Primary behavior order: Infer -> Propose -> Patch -> Ask.",
                   "An empty field is not an automatic reason to ask a question.",
                   "First extract the maximum available information from Blueprint, user_input and advanced_options.",
-                  "If a value can be reasonably inferred without distorting the user's intent, you must return it through patch.",
+                  "If a value can be reasonably inferred without distorting the user's intent and fits the allowed Refinement patch scope, you may return it through patch.",
                   "Refinement is a working patch step, not the final trust or alignment layer.",
-                  "You may independently infer and patch simple missing details, especially for narrative.scene_setup, narrative.scene_development, and visual_direction.emotion.",
+                  "You may independently infer and patch only narrow safe Refinement fields that are explicitly allowed.",
                   "Do not ask about decisions a professional scriptwriter can make: basic emotion, opening situation, scene development, pace, dramatic accent.",
                   "message must describe current-stage processing only: acknowledge the input, say the working scene direction was updated, and prepare it for pre-final alignment.",
                   "message must not start with an accepted scriptwriting decision.",
@@ -1036,16 +1069,17 @@ function buildRefinementInput(surfaceRequest) {
                   "If a question is asked, keep message limited to the current refinement update, then ask the single question.",
                   "Even when a question is needed, return the fullest valid patch for every field that can already be closed.",
                   "questions must be empty if patch already closes the current stage well enough.",
-                  "Allowed patch paths only:",
-                  "- goal.video_topic",
-                  "- goal.video_goal",
-                  "- scene_core.seed_scene",
-                  "- narrative.scene_setup",
-                  "- narrative.scene_development",
-                  "- visual_direction.emotion",
-                  "Do not return any other blueprint patch paths.",
-                  "Preserve existing selected scene by default; do not rewrite seed scene unless the user explicitly asks for a new scene, new story, or start over.",
-                  "Do not return conditional sections.",
+                  "Allowed Refinement patch paths only:",
+                  formatAllowedPatchPathsForPrompt(REFINEMENT_ALLOWED_PATCH_PATHS),
+                  "Do not change scene_core.seed_scene.",
+                  "Do not change goal.video_topic or goal.video_goal.",
+                  "Do not change meta, system_state, refinement_state, extensions, result_schema, final_result, blocks, route/readiness/build fields.",
+                  "narrative.scene_setup and narrative.scene_development are working Blueprint fields and may be updated when the user requests a local refinement inside the selected seed_scene.",
+                  "Preserve selected seed_scene as the base.",
+                  "If the user asks for a completely new scene/story/product/goal/type, classify as new_cycle_request and do not patch seed_scene in this response.",
+                  "You may patch allowed participants/environment/visual_direction/technical_layer/marketing_layer fields listed above.",
+                  "Do not patch arbitrary nested keys outside the exact whitelist.",
+                  "Return a safe all-or-nothing patch only.",
                   "No markdown."
                 ].join("\n")
               : [
@@ -1066,9 +1100,9 @@ function buildRefinementInput(surfaceRequest) {
                   "Главный порядок работы: Infer -> Propose -> Patch -> Ask.",
                   "Пустое поле не является автоматической причиной задавать вопрос.",
                   "Сначала извлекай максимум информации из Blueprint, user_input и advanced_options.",
-                  "Если значение можно разумно вывести без искажения замысла пользователя, обязательно верни его через patch.",
+                  "Если значение можно разумно вывести без искажения замысла пользователя и оно входит в разрешённый scope Refinement patch, можешь вернуть его через patch.",
                   "Refinement — это рабочий patch-step, а не финальный trust-layer и не Alignment.",
-                  "Ты можешь самостоятельно вывести и закрыть через patch простые недостающие детали, особенно narrative.scene_setup, narrative.scene_development и visual_direction.emotion.",
+                  "Ты можешь самостоятельно выводить и патчить только узкие безопасные поля Refinement, которые явно разрешены.",
                   "Не спрашивай о том, что сценарист может профессионально решить сам: базовая эмоция, начальная ситуация, развитие сцены, темп, драматургический акцент.",
                   "message должен описывать только обработку текущего этапа: что ввод понят, рабочая основа сцены обновлена и сцена подготовлена к предфинальному согласованию.",
                   "message не должен начинаться с принятого сценарного решения.",
@@ -1080,16 +1114,17 @@ function buildRefinementInput(surfaceRequest) {
                   "Если вопрос задаётся, ограничь message текущим refinement-обновлением, затем задай единственный вопрос.",
                   "Даже если вопрос нужен, верни максимально полный валидный patch по всем полям, которые уже можно закрыть.",
                   "questions должны быть пустыми, если patch уже достаточно хорошо закрывает текущий этап.",
-                  "Разрешённые patch paths только:",
-                  "- goal.video_topic",
-                  "- goal.video_goal",
-                  "- scene_core.seed_scene",
-                  "- narrative.scene_setup",
-                  "- narrative.scene_development",
-                  "- visual_direction.emotion",
-                  "Не возвращай никакие другие blueprint patch paths.",
-                  "По умолчанию сохраняй выбранную сцену; не переписывай seed scene, если пользователь явно не просит новую сцену, новую историю или начать заново.",
-                  "Не возвращай conditional sections.",
+                  "Разрешённые patch paths для Refinement только:",
+                  formatAllowedPatchPathsForPrompt(REFINEMENT_ALLOWED_PATCH_PATHS),
+                  "Не меняй scene_core.seed_scene.",
+                  "Не меняй goal.video_topic или goal.video_goal.",
+                  "Не меняй meta, system_state, refinement_state, extensions, result_schema, final_result, blocks, route/readiness/build fields.",
+                  "narrative.scene_setup и narrative.scene_development — рабочие Blueprint fields; их можно обновлять при локальном refinement внутри выбранной seed_scene.",
+                  "Сохраняй выбранную seed_scene как базу.",
+                  "Если пользователь просит полностью новую сцену/историю/продукт/цель/тип, классифицируй как new_cycle_request и не патчь seed_scene в этом ответе.",
+                  "Можно патчить только перечисленные выше allowed participants/environment/visual_direction/technical_layer/marketing_layer fields.",
+                  "Не патчь произвольные вложенные ключи вне exact whitelist.",
+                  "Возвращай только безопасный all-or-nothing patch.",
                   "Без markdown."
                 ].join("\n"))
         }
@@ -1838,6 +1873,19 @@ function buildMeta(surfaceRequest, extras = {}) {
   };
 }
 
+function normalizeBaseBlueprintRevisionEcho(value) {
+  if (value === undefined || value === null) {
+    return null;
+  }
+
+  const numeric = Number(value);
+  if (!Number.isInteger(numeric) || numeric < 1) {
+    return null;
+  }
+
+  return numeric;
+}
+
 // ============================================================
 // Patch discipline
 // ============================================================
@@ -1850,15 +1898,41 @@ function sanitizePatchByPolicy(rawPatch, surface) {
   rejectForbiddenRouteKeys(rawPatch);
 
   const flatPatch = flattenPatchObject(rawPatch);
+  const unsafePaths = Object.keys(flatPatch).filter(
+    (path) => !isAllowedPatchPath(path, surface) || isForbiddenSystemPath(path)
+  );
+
+  if (unsafePaths.length > 0) {
+    throw new Error(
+      `Patch contains forbidden/protected path for ${surface}: ${unsafePaths.join(", ")}`
+    );
+  }
+
+  if (surface === EXECUTION_SURFACES.REFINEMENT) {
+    assertNoUnsafeRefinementPatchPaths(flatPatch);
+  }
+
   const sanitized = {};
 
   for (const [path, value] of Object.entries(flatPatch)) {
-    if (!isAllowedPatchPath(path, surface)) continue;
-    if (isForbiddenSystemPath(path)) continue;
     sanitized[path] = sanitizePatchValue(value);
   }
 
   return sanitized;
+}
+
+function assertNoUnsafeRefinementPatchPaths(flatPatch) {
+  const unsafePaths = Object.keys(flatPatch).filter(
+    (path) =>
+      !isAllowedPatchPath(path, EXECUTION_SURFACES.REFINEMENT) ||
+      isForbiddenSystemPath(path)
+  );
+
+  if (unsafePaths.length > 0) {
+    throw new Error(
+      `Refinement patch contains forbidden/protected path: ${unsafePaths.join(", ")}`
+    );
+  }
 }
 
 function isAllowedPatchPath(path, surface) {
@@ -1882,25 +1956,34 @@ function isAllowedPatchPath(path, surface) {
 }
 
 function isForbiddenSystemPath(path) {
-  return (
-    path.startsWith("system_state.") ||
-    path === "meta" ||
-    path === "system_state" ||
-    path.startsWith("meta.") ||
+  const protectedPrefixes = [
+    "system_state",
+    "meta",
+    "extensions",
+    "result_schema",
+    "final_result",
+    "blocks",
+    "output.blocks",
+    "billing",
+    "plan",
+    "entitlement",
+    "messages",
+    "history",
+    "runtime",
+    "localStorage"
+  ];
+
+  if (
     path === "ready_for_final_assembly" ||
     path === "required_inputs_complete" ||
-    path === "minimum_usable_readiness" ||
-    path.startsWith("extensions.") ||
-    path.startsWith("participants.") ||
-    path.startsWith("environment.") ||
-    path.startsWith("technical_layer.") ||
-    path.startsWith("marketing_layer.") ||
-    path === "result_schema" ||
-    path.startsWith("result_schema.") ||
-    path === "blocks" ||
-    path.startsWith("blocks.") ||
-    path === "output.blocks" ||
-    path.startsWith("output.blocks.")
+    path === "minimum_usable_readiness"
+  ) {
+    return true;
+  }
+
+  return protectedPrefixes.some(
+    (protectedPath) =>
+      path === protectedPath || path.startsWith(`${protectedPath}.`)
   );
 }
 

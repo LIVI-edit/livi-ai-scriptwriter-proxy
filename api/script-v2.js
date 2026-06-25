@@ -41,7 +41,32 @@ const FORBIDDEN_ROUTE_KEYS = new Set([
   "advance_to_alignment",
   "advance_to_build",
   "ready_hint",
-  "response_stage"
+  "response_stage",
+  "ready_for_final_assembly",
+  "required_inputs_complete",
+  "minimum_usable_readiness",
+  "system_state",
+  "refinement_state",
+  "current_stage",
+  "build_allowed",
+  "can_build",
+  "final_result",
+  "result_schema",
+  "meta.result_schema"
+]);
+
+const REFINEMENT_INTENT_LABELS = new Set([
+  "brief_or_context",
+  "option_selection",
+  "actionable_change",
+  "unclear_dissatisfaction",
+  "ready_to_continue",
+  "wants_more_options",
+  "asks_question",
+  "hold_or_not_ready",
+  "alternative_request",
+  "new_cycle_request",
+  "off_topic_or_unclear"
 ]);
 
 // Patch Contract v1 — exact
@@ -985,9 +1010,15 @@ function buildRefinementInput(surfaceRequest) {
                   "No route decisions.",
                   "No readiness logic.",
                   "Return only current-stage output.",
-                  "Output fields: message, questions, patch.",
-                  'Required JSON shape: { "message": "short current-stage message", "questions": [], "patch": {} }',
+                  "Output fields: message, user_intent_label, anchor_hint, questions, options, patch.",
+                  'Required JSON shape: { "message": "short current-stage message", "user_intent_label": "one allowed label", "anchor_hint": "string or null", "questions": [], "options": [], "patch": {} }',
                   "message must always be present as a non-empty string.",
+                  "Use exactly one user_intent_label from this allowed list: brief_or_context, option_selection, actionable_change, unclear_dissatisfaction, ready_to_continue, wants_more_options, asks_question, hold_or_not_ready, alternative_request, new_cycle_request, off_topic_or_unclear.",
+                  "Label guidance: brief_or_context = user gives additional brief/context without clear action; option_selection = user selects one offered option; actionable_change = user asks for a concrete change inside current refinement; unclear_dissatisfaction = user is unsure, dissatisfied, or says they do not know; ready_to_continue = user explicitly confirms readiness to continue; wants_more_options = user asks for more variants/options; asks_question = user asks a question back; hold_or_not_ready = user explicitly says not to proceed / not ready; alternative_request = user asks for another approach but not necessarily new cycle; new_cycle_request = user explicitly asks for new scene / new story / start over; off_topic_or_unclear = input is off-topic or impossible to classify.",
+                  "anchor_hint is required as a key and may be a string, null, or \"unknown\".",
+                  "Return at most one question. questions must be [] or [\"one short question\"].",
+                  "Return options only when the user asks for alternatives or when options are more appropriate than a question. options must contain at most 4 objects with option_id and title, and optional description.",
+                  "Do not include route, stage, readiness, system_state, refinement_state, final_result, result_schema, or build decisions.",
                   "Primary behavior order: Infer -> Propose -> Patch -> Ask.",
                   "An empty field is not an automatic reason to ask a question.",
                   "First extract the maximum available information from Blueprint, user_input and advanced_options.",
@@ -1013,6 +1044,7 @@ function buildRefinementInput(surfaceRequest) {
                   "- narrative.scene_development",
                   "- visual_direction.emotion",
                   "Do not return any other blueprint patch paths.",
+                  "Preserve existing selected scene by default; do not rewrite seed scene unless the user explicitly asks for a new scene, new story, or start over.",
                   "Do not return conditional sections.",
                   "No markdown."
                 ].join("\n")
@@ -1022,9 +1054,15 @@ function buildRefinementInput(surfaceRequest) {
                   "Без route decisions.",
                   "Без readiness logic.",
                   "Верни только output текущего этапа.",
-                  "Поля output: message, questions, patch.",
-                  'Обязательная JSON-форма: { "message": "короткое сообщение текущего этапа", "questions": [], "patch": {} }',
+                  "Поля output: message, user_intent_label, anchor_hint, questions, options, patch.",
+                  'Обязательная JSON-форма: { "message": "короткое сообщение текущего этапа", "user_intent_label": "одна разрешённая метка", "anchor_hint": "строка или null", "questions": [], "options": [], "patch": {} }',
                   "message должен присутствовать всегда и быть непустой строкой.",
+                  "Используй ровно один user_intent_label из разрешённого списка: brief_or_context, option_selection, actionable_change, unclear_dissatisfaction, ready_to_continue, wants_more_options, asks_question, hold_or_not_ready, alternative_request, new_cycle_request, off_topic_or_unclear.",
+                  "Подсказка по меткам: brief_or_context = пользователь даёт дополнительный бриф/контекст без ясного действия; option_selection = выбирает один из предложенных вариантов; actionable_change = просит конкретное изменение внутри текущего refinement; unclear_dissatisfaction = сомневается, недоволен или говорит «не знаю»; ready_to_continue = явно подтверждает готовность продолжать; wants_more_options = просит больше вариантов; asks_question = задаёт встречный вопрос; hold_or_not_ready = явно просит не продолжать / не готов; alternative_request = просит другой подход, но не обязательно новый цикл; new_cycle_request = явно просит новую сцену / новую историю / начать заново; off_topic_or_unclear = ввод не по теме или невозможно классифицировать.",
+                  "anchor_hint обязателен как ключ и может быть строкой, null или \"unknown\".",
+                  "Верни максимум один question. questions должны быть [] или [\"один короткий вопрос\"].",
+                  "Возвращай options только когда пользователь просит альтернативы или варианты уместнее вопроса. options — максимум 4 объекта с option_id и title, опционально description.",
+                  "Не включай route, stage, readiness, system_state, refinement_state, final_result, result_schema или решения о Build.",
                   "Главный порядок работы: Infer -> Propose -> Patch -> Ask.",
                   "Пустое поле не является автоматической причиной задавать вопрос.",
                   "Сначала извлекай максимум информации из Blueprint, user_input и advanced_options.",
@@ -1050,6 +1088,7 @@ function buildRefinementInput(surfaceRequest) {
                   "- narrative.scene_development",
                   "- visual_direction.emotion",
                   "Не возвращай никакие другие blueprint patch paths.",
+                  "По умолчанию сохраняй выбранную сцену; не переписывай seed scene, если пользователь явно не просит новую сцену, новую историю или начать заново.",
                   "Не возвращай conditional sections.",
                   "Без markdown."
                 ].join("\n"))
@@ -1391,12 +1430,71 @@ function validateRefinementResponse(modelRaw) {
     throw new Error("refinement model response must contain message");
   }
 
+  if (typeof data.user_intent_label !== "string" || !data.user_intent_label.trim()) {
+    throw new Error("refinement model response must contain user_intent_label");
+  }
+
+  if (!REFINEMENT_INTENT_LABELS.has(data.user_intent_label.trim())) {
+    throw new Error(`refinement user_intent_label is not allowed: ${data.user_intent_label}`);
+  }
+
+  if (
+    data.anchor_hint != null &&
+    typeof data.anchor_hint !== "string"
+  ) {
+    throw new Error("refinement anchor_hint must be a string or null");
+  }
+
   if (data.questions != null && !Array.isArray(data.questions)) {
     throw new Error("refinement questions must be an array");
   }
 
+  if (Array.isArray(data.questions)) {
+    if (data.questions.length > 1) {
+      throw new Error("refinement questions must contain at most one question");
+    }
+
+    for (const question of data.questions) {
+      if (typeof question !== "string" || !question.trim()) {
+        throw new Error("refinement questions must contain non-empty strings");
+      }
+    }
+  }
+
+  if (data.options != null && !Array.isArray(data.options)) {
+    throw new Error("refinement options must be an array");
+  }
+
+  if (Array.isArray(data.options)) {
+    if (data.options.length > 4) {
+      throw new Error("refinement options must contain at most four options");
+    }
+
+    for (const option of data.options) {
+      if (!isPlainObject(option)) {
+        throw new Error("refinement options must contain objects");
+      }
+
+      if (typeof option.option_id !== "string" || !option.option_id.trim()) {
+        throw new Error("refinement option must contain option_id");
+      }
+
+      if (typeof option.title !== "string" || !option.title.trim()) {
+        throw new Error("refinement option must contain title");
+      }
+
+      if (option.description != null && typeof option.description !== "string") {
+        throw new Error("refinement option description must be a string");
+      }
+    }
+  }
+
   if (data.patch != null && !isPlainObject(data.patch)) {
     throw new Error("refinement patch must be an object");
+  }
+
+  if (data.blueprint_patch != null && !isPlainObject(data.blueprint_patch)) {
+    throw new Error("refinement blueprint_patch must be an object");
   }
 
   return data;
@@ -1532,12 +1630,15 @@ function normalizeDevelopmentResponse(validated) {
 }
 
 function normalizeRefinementResponse(validated, language) {
-  const patch = sanitizePatchByPolicy(validated.patch, EXECUTION_SURFACES.REFINEMENT);
+  const patch = sanitizePatchByPolicy(getModelPatchObject(validated), EXECUTION_SURFACES.REFINEMENT);
 
   return {
     output: {
       message: normalizeRefinementPublicMessage(validated.message, language),
-      questions: normalizeQuestions(validated.questions)
+      user_intent_label: validated.user_intent_label.trim(),
+      anchor_hint: normalizeRefinementAnchorHint(validated.anchor_hint),
+      questions: normalizeRefinementQuestions(validated.questions),
+      options: normalizeOptions(validated.options)
     },
     blueprint_patch: patch
   };
@@ -1551,6 +1652,37 @@ function normalizeRefinementPublicMessage(message, language) {
   }
 
   return text;
+}
+
+function normalizeRefinementAnchorHint(value) {
+  if (value == null) return null;
+  const text = safeTrim(value);
+  return text || null;
+}
+
+function normalizeRefinementQuestions(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => safeTrim(item)).filter(Boolean);
+}
+
+function normalizeOptions(value) {
+  if (!Array.isArray(value)) return [];
+
+  return value.map((option) => {
+    const normalized = {
+      option_id: safeTrim(option.option_id),
+      title: safeTrim(option.title)
+    };
+
+    if (option.description != null) {
+      const description = safeTrim(option.description);
+      if (description) {
+        normalized.description = description;
+      }
+    }
+
+    return normalized;
+  });
 }
 
 function isForbiddenRefinementPublicMessage(message) {
@@ -2638,7 +2770,7 @@ function rejectForbiddenRouteKeys(obj) {
 
   for (const path of paths) {
     const last = path.split(".").pop();
-    if (FORBIDDEN_ROUTE_KEYS.has(last)) {
+    if (FORBIDDEN_ROUTE_KEYS.has(path) || FORBIDDEN_ROUTE_KEYS.has(last)) {
       throw new Error(`Forbidden route key returned by model: ${path}`);
     }
   }

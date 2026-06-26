@@ -4,6 +4,7 @@
 
 const OPENAI_URL = "https://api.openai.com/v1/responses";
 const MODEL = process.env.OPENAI_MODEL || "gpt-4.1-mini";
+const BUILD_DIAGNOSTIC_PREVIEW_LIMIT = 600;
 
 const EXECUTION_SURFACES = Object.freeze({
   // Technical request surfaces. These are not Blueprint product stages.
@@ -597,11 +598,17 @@ async function executeAlignment(surfaceRequest) {
 async function executeBuildSurface(surfaceRequest) {
   assertBuildRequest(surfaceRequest);
 
-  const schemaValidation = validateBuildResultSchemaContext(
-    surfaceRequest?.meta?.result_schema
-  );
+  const rawResultSchema = surfaceRequest?.meta?.result_schema;
+  logBuildDiagnostic("debug", "build_request_context", buildBuildRequestDiagnostic(surfaceRequest, rawResultSchema));
+
+  const schemaValidation = validateBuildResultSchemaContext(rawResultSchema);
 
   if (schemaValidation.ok !== true) {
+    logBuildDiagnostic("warn", "build_result_schema_invalid", {
+      code: schemaValidation.code,
+      message: schemaValidation.message,
+      result_schema: buildResultSchemaDiagnostic(rawResultSchema)
+    });
     return buildBuildSurfaceErrorEnvelope({
       surfaceRequest,
       code: schemaValidation.code,
@@ -609,9 +616,14 @@ async function executeBuildSurface(surfaceRequest) {
     });
   }
 
-  const resultSchema = safeResultSchemaSnapshot(surfaceRequest.meta.result_schema);
+  const resultSchema = safeResultSchemaSnapshot(rawResultSchema);
 
   if (!hasBuildAllowedBlocks(resultSchema)) {
+    logBuildDiagnostic("warn", "build_result_schema_empty", {
+      code: "BUILD_RESULT_SCHEMA_EMPTY",
+      message: "Build result schema has no allowed blocks.",
+      result_schema: buildResultSchemaDiagnostic(resultSchema)
+    });
     return buildBuildSurfaceErrorEnvelope({
       surfaceRequest,
       code: "BUILD_RESULT_SCHEMA_EMPTY",
@@ -621,25 +633,53 @@ async function executeBuildSurface(surfaceRequest) {
 
   const modelInput = buildBuildInput(surfaceRequest, resultSchema);
 
-  const modelRaw = await callModel(modelInput);
+  let modelRaw;
+  try {
+    modelRaw = await callModel(modelInput);
+  } catch (error) {
+    logBuildDiagnostic("warn", "build_model_call_failed", {
+      message: error?.message || "Build model call failed",
+      result_schema: buildResultSchemaDiagnostic(resultSchema)
+    });
+    throw error;
+  }
 
-  console.log("=== BUILD RAW ===");
-  console.log(modelRaw && modelRaw.raw_text);
+  logBuildDiagnostic("debug", "build_model_raw_response", buildBuildModelRawDiagnostic(modelRaw));
 
-  console.log("=== BUILD PARSED ===");
-  console.log(modelRaw && modelRaw.parsed_json);
+  let validated;
+  try {
+    validated = validateBuildResponse(modelRaw);
+  } catch (error) {
+    logBuildDiagnostic("warn", "build_response_validation_failed", {
+      message: error?.message || "Build response validation failed",
+      parsed_json: buildBuildParsedDiagnostic(modelRaw?.parsed_json),
+      raw_response: buildBuildModelRawDiagnostic(modelRaw)
+    });
+    throw error;
+  }
 
-  const validated = validateBuildResponse(modelRaw);
+  logBuildDiagnostic("debug", "build_parsed_json", buildBuildParsedDiagnostic(validated));
 
-  console.log("=== BUILD VALIDATED ===");
-  console.log(validated);
+  let normalized;
+  try {
+    normalized = normalizeBuildResponse(validated, resultSchema);
+  } catch (error) {
+    logBuildDiagnostic("warn", "build_response_normalization_failed", {
+      message: error?.message || "Build response normalization failed",
+      normalization: buildBuildNormalizationDiagnostic(validated, null, resultSchema)
+    });
+    throw error;
+  }
 
-  const normalized = normalizeBuildResponse(validated, resultSchema);
-
-  console.log("=== BUILD NORMALIZED ===");
-  console.log(normalized?.output?.blocks);
+  logBuildDiagnostic("debug", "build_normalization_result", buildBuildNormalizationDiagnostic(validated, normalized, resultSchema));
 
   if (!hasNonEmptyBuildBlocks(normalized?.output?.blocks)) {
+    logBuildDiagnostic("warn", "BUILD_EMPTY_BLOCKS_context", {
+      code: "BUILD_EMPTY_BLOCKS",
+      message: "Build returned no content blocks.",
+      empty_blocks_context: buildBuildEmptyBlocksDiagnostic(validated, normalized, resultSchema),
+      normalization: buildBuildNormalizationDiagnostic(validated, normalized, resultSchema)
+    });
     return buildBuildSurfaceErrorEnvelope({
       surfaceRequest,
       code: "BUILD_EMPTY_BLOCKS",
@@ -2614,6 +2654,141 @@ function extractRawSelectionText(userInput) {
   }
 
   return userInput.raw_text.trim();
+}
+
+function logBuildDiagnostic(level, eventName, details) {
+  const payload = {
+    patch: "stage3_patch8",
+    surface: EXECUTION_SURFACES.BUILD,
+    event: eventName,
+    ...ensureObject(details)
+  };
+  const writer = level === "warn" ? console.warn : console.debug;
+
+  try {
+    writer.call(console, "[SW_PATCH8_BUILD_DIAGNOSTICS]", payload);
+  } catch (_) {
+    // Diagnostics must never affect Build execution.
+  }
+}
+
+function buildBuildRequestDiagnostic(surfaceRequest, rawSchema) {
+  const blueprint = ensureObject(surfaceRequest?.blueprint);
+  const meta = ensureObject(blueprint.meta);
+  const systemState = ensureObject(blueprint.system_state);
+  const requestMeta = ensureObject(surfaceRequest?.meta);
+
+  return {
+    request_stage: normalizeDiagnosticString(surfaceRequest?.stage) || null,
+    blueprint_current_stage: normalizeDiagnosticString(systemState.current_stage) || null,
+    video_type: normalizeDiagnosticString(meta.video_type) || normalizeDiagnosticString(requestMeta.video_type) || null,
+    role_id: normalizeDiagnosticString(meta.scriptwriter_role) || normalizeDiagnosticString(meta.role_id) || normalizeDiagnosticString(requestMeta.role_id) || null,
+    language: normalizeDiagnosticString(surfaceRequest?.language) || normalizeDiagnosticString(meta.language) || null,
+    meta_result_schema_exists: isPlainObject(rawSchema),
+    result_schema: buildResultSchemaDiagnostic(rawSchema)
+  };
+}
+
+function buildResultSchemaDiagnostic(schema) {
+  const blockCharacterBudget = isPlainObject(schema?.block_character_budget)
+    ? schema.block_character_budget
+    : {};
+  const allowedBlocks = Array.isArray(schema?.blocks)
+    ? schema.blocks.map((block) => normalizeDiagnosticString(block)).filter(Boolean)
+    : [];
+
+  return {
+    exists: isPlainObject(schema),
+    keys: getPlainObjectKeys(schema),
+    allowed_block_ids: allowedBlocks,
+    allowed_block_count: allowedBlocks.length,
+    block_character_budget_keys: Object.keys(blockCharacterBudget),
+    selected_advanced_options_count: Array.isArray(schema?.selected_advanced_options)
+      ? schema.selected_advanced_options.length
+      : 0
+  };
+}
+
+function buildBuildModelRawDiagnostic(modelRaw) {
+  const rawText = typeof modelRaw?.raw_text === "string" ? modelRaw.raw_text : "";
+  return {
+    raw_text_length: rawText.length,
+    raw_text_preview: buildDiagnosticPreview(rawText),
+    parse_success: isPlainObject(modelRaw?.parsed_json),
+    parsed_top_level_keys: getPlainObjectKeys(modelRaw?.parsed_json)
+  };
+}
+
+function buildBuildParsedDiagnostic(parsed) {
+  const data = ensureObject(parsed);
+  const blocks = isPlainObject(data.blocks) ? data.blocks : null;
+  const output = isPlainObject(data.output) ? data.output : null;
+  const outputBlocks = isPlainObject(output?.blocks) ? output.blocks : null;
+
+  return {
+    top_level_keys: getPlainObjectKeys(data),
+    output_keys: getPlainObjectKeys(output),
+    blocks_keys: getPlainObjectKeys(blocks),
+    output_blocks_keys: getPlainObjectKeys(outputBlocks),
+    has_top_level_blocks_object: isPlainObject(blocks),
+    has_output_object: isPlainObject(output),
+    has_output_blocks_object: isPlainObject(outputBlocks)
+  };
+}
+
+function buildBuildNormalizationDiagnostic(validated, normalized, resultSchema) {
+  const allowedBlockIds = getBuildAllowedBlocks(resultSchema);
+  const parsedBlockKeys = getPlainObjectKeys(validated?.blocks);
+  const normalizedBlocks = ensureObject(normalized?.output?.blocks);
+  const normalizedBlockIds = Object.keys(normalizedBlocks);
+  const droppedOrIgnoredBlockKeys = parsedBlockKeys.filter((key) => !normalizedBlockIds.includes(key));
+
+  return {
+    allowed_block_ids: allowedBlockIds,
+    parsed_block_keys: parsedBlockKeys,
+    normalized_block_ids: normalizedBlockIds,
+    normalized_block_count: normalizedBlockIds.length,
+    dropped_or_ignored_block_keys: droppedOrIgnoredBlockKeys,
+    parsed_blocks_outside_allowed_schema: parsedBlockKeys.filter((key) => !allowedBlockIds.includes(key))
+  };
+}
+
+function buildBuildEmptyBlocksDiagnostic(validated, normalized, resultSchema) {
+  const parsedBlocks = isPlainObject(validated?.blocks) ? validated.blocks : null;
+  const parsedBlockKeys = getPlainObjectKeys(parsedBlocks);
+  const allowedBlockIds = getBuildAllowedBlocks(resultSchema);
+  const allowedSet = new Set(allowedBlockIds);
+  const allowedBlockMatches = parsedBlockKeys.filter((key) => allowedSet.has(key));
+  const normalizedBlockIds = Object.keys(ensureObject(normalized?.output?.blocks));
+
+  return {
+    parsed_output_missing: !isPlainObject(validated?.output),
+    output_blocks_missing: !isPlainObject(validated?.output?.blocks),
+    top_level_blocks_missing: !isPlainObject(parsedBlocks),
+    blocks_object_empty: parsedBlockKeys.length === 0,
+    allowed_block_ids_mismatch: parsedBlockKeys.length > 0 && allowedBlockMatches.length === 0,
+    allowed_block_matches_count: allowedBlockMatches.length,
+    normalized_blocks_empty: normalizedBlockIds.length === 0
+  };
+}
+
+function getPlainObjectKeys(value) {
+  return isPlainObject(value) ? Object.keys(value) : [];
+}
+
+function normalizeDiagnosticString(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function buildDiagnosticPreview(value, limit = BUILD_DIAGNOSTIC_PREVIEW_LIMIT) {
+  const text = typeof value === "string" ? value : "";
+  const normalized = text.replace(/\s+/g, " ").trim();
+
+  if (normalized.length <= limit) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, limit)}…`;
 }
 
 function validateBuildResultSchemaContext(rawSchema) {

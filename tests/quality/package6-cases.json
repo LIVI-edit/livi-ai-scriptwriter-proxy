@@ -1,0 +1,14 @@
+[
+ {"id":"ru-video-creative_director","language":"ru","role":"creative_director","video_type":"video","brief":"Запуск умного устройства через выбор героя"},
+ {"id":"ru-promo-commercial_strategist","language":"ru","role":"commercial_strategist","video_type":"promo","brief":"Промо сервиса доставки с ясной ценностью"},
+ {"id":"ru-interactive-film_director","language":"ru","role":"film_director","video_type":"interactive","brief":"Интерактивная сцена с выбором и последствием"},
+ {"id":"ru-video-prompt-cinematographer","language":"ru","role":"cinematographer","video_type":"video_prompt","brief":"Кинематографичный пролёт по футуристической лаборатории"},
+ {"id":"ru-image-prompt-creative_director","language":"ru","role":"creative_director","video_type":"image_prompt","brief":"Один сильный кадр бренда в минималистичной студии"},
+ {"id":"ru-video-commercial_strategist","language":"ru","role":"commercial_strategist","video_type":"video","brief":"Социальный ролик о новой привычке"},
+ {"id":"en-video-cinematographer","language":"en","role":"cinematographer","video_type":"video","brief":"A visual reveal of a clean-energy device"},
+ {"id":"en-promo-commercial_strategist","language":"en","role":"commercial_strategist","video_type":"promo","brief":"A concise promo for a productivity app"},
+ {"id":"en-interactive-film_director","language":"en","role":"film_director","video_type":"interactive","brief":"A viewer choice changes the room"},
+ {"id":"en-video-prompt-creative_director","language":"en","role":"creative_director","video_type":"video_prompt","brief":"A dreamlike city transformation"},
+ {"id":"en-image-prompt-cinematographer","language":"en","role":"cinematographer","video_type":"image_prompt","brief":"One iconic frame for a premium watch"},
+ {"id":"en-promo-film_director","language":"en","role":"film_director","video_type":"promo","brief":"A staged product demonstration with payoff"}
+]

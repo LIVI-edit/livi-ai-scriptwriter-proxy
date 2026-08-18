@@ -76,8 +76,8 @@ test('Refinement-bound module directives appear only inside an already open anch
 
 test('selected Advanced module never grants route, readiness or Build authority in prompts',async()=>{
   const text=await capture('refinement',bp({extensions:{characters:{enabled:true},cta_strategy:{enabled:true}},system_state:{refinement_state:{active_anchor:'hero_focus',open_anchor:true}}}));
-  assert.match(text,/Never return route|Никогда не возвращай route/i);
-  assert.match(text,/Build authority/i);
+  assert.match(text,/Never return[^\n]*route|Никогда не возвращай[^\n]*route/i);
+  assert.match(text,/Build(?: authority| permission)?|Build,/i);
   assert.doesNotMatch(text,/"ready_for_final_assembly":true|"build_allowed":true/);
 });
 

@@ -114,15 +114,11 @@ const REFINEMENT_MODEL_TOP_LEVEL_KEYS = new Set([
   "anchor_hint",
   "questions",
   "options",
-  "patch",
   "blueprint_patch",
+  "selected_option_id",
+  // V1-only provider fields are recognized only so they can be rejected/traced cleanly.
+  "patch",
   "meta"
-]);
-const REFINEMENT_META_KEYS = new Set([
-  "current_stage_echo",
-  "role_id_echo",
-  "video_type_echo",
-  "language_echo"
 ]);
 
 // Patch Contract v1 — exact
@@ -586,11 +582,11 @@ async function executeRefinement(surfaceRequest) {
     const modelInput = buildRefinementInput(surfaceRequest);
     const modelRaw = await callModel(modelInput);
     const validated = validateRefinementResponse(modelRaw, surfaceRequest);
-    const normalized = normalizeRefinementResponse(validated, surfaceRequest.language);
+    const normalized = normalizeRefinementResponse(validated);
 
     return buildJsonEnvelope({
       stage: EXECUTION_SURFACES.REFINEMENT,
-      status: STATUSES.OK,
+      status: normalized.status,
       output: normalized.output,
       meta: buildMeta(surfaceRequest, {
         patch_allowed: true,
@@ -600,11 +596,23 @@ async function executeRefinement(surfaceRequest) {
       error: null
     });
   } catch (error) {
-    console.warn("[SCRIPT_V2_REFINEMENT_INVALID]", { code: "REFINEMENT_RESPONSE_INVALID" });
-    return buildErrorEnvelope({
+    console.warn("[SCRIPT_V2_REFINEMENT_INVALID]", {
+      code: "REFINEMENT_RESPONSE_FATAL",
+      diagnostic: safeTrim(error && error.message) || "unknown"
+    });
+    return buildJsonEnvelope({
       stage: EXECUTION_SURFACES.REFINEMENT,
-      code: "REFINEMENT_RESPONSE_INVALID",
-      message: "Refinement response failed validation."
+      status: STATUSES.ERROR,
+      output: null,
+      meta: buildMeta(surfaceRequest, {
+        patch_allowed: true,
+        ...buildTrustedRefinementEchoes(surfaceRequest)
+      }),
+      blueprint_patch: null,
+      error: {
+        code: "REFINEMENT_RESPONSE_FATAL",
+        message: "Refinement response is unusable."
+      }
     });
   }
 }
@@ -911,34 +919,36 @@ function buildRefinementInput(surfaceRequest) {
   const behaviorContext = deriveStageBehaviorDirectives(surfaceRequest, EXECUTION_SURFACES.REFINEMENT);
   const rules = lang === "en" ? [
     "You work only on Refinement and write directly in English.",
-    'Return JSON only with exactly these top-level fields: message, user_intent_label, anchor_hint, questions, options, patch, meta.',
-    "Use one allowed intent label and one allowed anchor. Return zero or one exact structured question and at most four exact structured options.",
+    'Return JSON only. Required fields: message, user_intent_label. Conditional fields only when needed: anchor_hint, questions, options, blueprint_patch, selected_option_id.',
+    "Do not return model meta echoes. The server owns trusted public meta.",
+    "Use only canonical user_intent_label and anchor values from the trusted context. anchor_hint may be omitted when unnecessary.",
+    'questions is optional, max 1. Question core: {"id":"...","text":"...","target_anchor":"..."}; reason is optional presentation metadata.',
+    'options is optional, max 4. Option core: {"id":"...","label":"...","target_anchor":"...","mode":"blocking|suggestive"}; description, effect, recommended are optional presentation metadata.',
+    "blueprint_patch is the only mutation carrier. Never return legacy patch. Preserve scene_core.seed_scene. Allowed patch paths only: scene_core.main_focus, narrative.scene_setup, narrative.scene_development, visual_direction.emotion.",
+    "For actionable_change return a non-empty blueprint_patch. For asks_question return exactly one valid question. For wants_more_options return at least one valid option.",
+    "For ready_to_continue return no non-empty blueprint_patch, questions or options. For hold_or_not_ready do not mutate state-bearing sidecars.",
+    "For a typed free-text option_selection while trusted pending options exist, return selected_option_id matching exactly one trusted options_context ID and a non-empty blueprint_patch. For structured option clicks, do not invent or reinterpret the ID.",
     "Infer -> propose -> patch -> ask. Do not ask merely because a field is empty.",
-    "For unclear_dissatisfaction: acknowledge uncertainty, offer 2-3 diagnostic directions shaped by role/type, and ask at most one narrow question; never ask a broad 'what do you dislike?'.",
-    "For asks_question: explain only the current subject, do not change anchor without new meaning, do not repeat the Blueprint, and do not treat the explanation as user input.",
-    "For wants_more_options: return 2-3 concrete options only for the current anchor, no automatic question; role/type/goal must influence them.",
-    "For delegation such as 'do what you think is best': choose a safe professional actionable_change or ready_to_continue, return a patch, and ask no question unless blocked.",
-    "For explicit hold: use hold_or_not_ready, do not promise Alignment, do not close the blocker; a short later 'ok' does not cancel hold without context.",
-    "For a local alternative: preserve seed_scene. For a fully new scene: use new_cycle_request, do not patch seed_scene and do not start a cycle automatically.",
+    "For unclear_dissatisfaction: acknowledge uncertainty and use only narrow diagnostic question/options when useful.",
+    "For a local alternative preserve seed_scene. For a fully new scene use new_cycle_request and do not reset the Blueprint yourself.",
     "Raw short input such as yes, ok, next, 1, 2 remains raw text and is classified from current context.",
-    "Preserve scene_core.seed_scene. Allowed patch paths only: scene_core.main_focus, narrative.scene_setup, narrative.scene_development, visual_direction.emotion.",
-    "Never return route, readiness, stage transition, system_state, result schema, final_result, Build authority or forbidden nested keys.",
-    "Echo trusted current_stage, role, type and language exactly in meta. No markdown."
+    "Never return route/readiness/stage/system/refinement state, Build permission, Billing/access, Result Schema or final_result authority. No markdown."
   ] : [
     "Ты работаешь только над Refinement и пишешь сразу на русском языке.",
-    'Верни только JSON ровно с top-level полями: message, user_intent_label, anchor_hint, questions, options, patch, meta.',
-    "Используй одну разрешённую intent-метку и один разрешённый anchor. Верни ноль или один точный structured question и не более четырёх точных structured options.",
+    'Верни только JSON. Обязательные поля: message, user_intent_label. Условные поля только при необходимости: anchor_hint, questions, options, blueprint_patch, selected_option_id.',
+    "Не возвращай model meta echoes. Trusted public meta принадлежит серверу.",
+    "Используй только canonical user_intent_label и anchor из trusted context. anchor_hint можно не возвращать, если он не нужен.",
+    'questions опционален, максимум 1. Core question: {"id":"...","text":"...","target_anchor":"..."}; reason — опциональная presentation metadata.',
+    'options опционален, максимум 4. Core option: {"id":"...","label":"...","target_anchor":"...","mode":"blocking|suggestive"}; description, effect, recommended — опциональная presentation metadata.',
+    "blueprint_patch — единственный mutation carrier. Никогда не возвращай legacy patch. Сохраняй scene_core.seed_scene. Разрешённые patch paths только: scene_core.main_focus, narrative.scene_setup, narrative.scene_development, visual_direction.emotion.",
+    "Для actionable_change верни непустой blueprint_patch. Для asks_question верни ровно один валидный question. Для wants_more_options верни минимум один валидный option.",
+    "Для ready_to_continue не возвращай непустые blueprint_patch, questions или options. Для hold_or_not_ready не добавляй state-bearing sidecars.",
+    "Для typed free-text option_selection при trusted pending options верни selected_option_id, точно совпадающий с одним ID из trusted options_context, и непустой blueprint_patch. Для structured option click не придумывай и не переинтерпретируй ID.",
     "Порядок: Infer -> Propose -> Patch -> Ask. Не спрашивай только потому, что поле пустое.",
-    "Для unclear_dissatisfaction: признай неопределённость, предложи 2–3 диагностических направления с учётом роли/типа и задай максимум один узкий вопрос; не спрашивай широко «что не нравится?». ",
-    "Для asks_question: объясни только текущий предмет, не меняй anchor без нового смысла, не повторяй Blueprint и не считай объяснение ответом пользователя.",
-    "Для wants_more_options: верни 2–3 конкретных варианта только для текущего anchor, без автоматического вопроса; роль/тип/цель должны влиять на варианты.",
-    "Для делегирования «сделай как лучше»: выбери безопасное профессиональное actionable_change или ready_to_continue, верни patch и не задавай вопрос без blocker.",
-    "Для явного hold: используй hold_or_not_ready, не обещай Alignment и не закрывай blocker; короткое последующее «ок» не отменяет hold без контекста.",
-    "Для локальной альтернативы сохраняй seed_scene. Для полностью новой сцены используй new_cycle_request, не patch seed_scene и не запускай цикл автоматически.",
+    "Для unclear_dissatisfaction признай неопределённость и используй только узкие diagnostic question/options, когда они полезны.",
+    "Для локальной альтернативы сохраняй seed_scene. Для полностью новой сцены используй new_cycle_request и не сбрасывай Blueprint самостоятельно.",
     "Короткий raw input «да», «ок», «дальше», «1», «2» остаётся raw text и классифицируется по текущему контексту.",
-    "Сохраняй scene_core.seed_scene. Разрешённые patch paths только: scene_core.main_focus, narrative.scene_setup, narrative.scene_development, visual_direction.emotion.",
-    "Никогда не возвращай route, readiness, переход этапа, system_state, result schema, final_result, Build authority или запрещённые nested keys.",
-    "Точно отрази trusted current_stage, role, type и language в meta. Без markdown."
+    "Никогда не возвращай authority по route/readiness/stage/system/refinement state, Build, Billing/access, Result Schema или final_result. Без markdown."
   ];
   return [
     { role: "system", content: [{ type: "input_text", text: `${getLanguageInstruction(lang)}\n${rules.join("\n")}` }] },
@@ -1187,74 +1197,268 @@ function validateDevelopmentResponse(modelRaw) {
 }
 
 function validateRefinementResponse(modelRaw, surfaceRequest) {
-  const data = validateBaseModelObject(modelRaw, EXECUTION_SURFACES.REFINEMENT);
-  assertExactObjectKeys(data, REFINEMENT_MODEL_TOP_LEVEL_KEYS, "refinement model response");
+  const data = modelRaw?.parsed_json;
+  if (!isPlainObject(data)) {
+    throw new Error("refinement model response must be a JSON object");
+  }
 
-  if (typeof data.message !== "string" || !data.message.trim()) {
+  const message = normalizeRefinementPublicMessage(data.message);
+  if (!message) {
     throw new Error("refinement model response must contain message");
   }
-  if (typeof data.user_intent_label !== "string" || !data.user_intent_label.trim()) {
-    throw new Error("refinement model response must contain user_intent_label");
-  }
-  if (!REFINEMENT_INTENT_LABELS.has(data.user_intent_label.trim())) {
-    throw new Error(`refinement user_intent_label is not allowed: ${data.user_intent_label}`);
-  }
-  if (typeof data.anchor_hint !== "string" || !REFINEMENT_ALLOWED_ANCHORS.has(data.anchor_hint.trim())) {
-    throw new Error(`refinement anchor_hint is not allowed: ${data.anchor_hint}`);
+
+  const strictDiagnostic = process.env.NODE_ENV === "test" || process.env.NODE_ENV === "development";
+  const forbiddenPath = findForbiddenRefinementAuthorityPath(data);
+  if (forbiddenPath) {
+    if (strictDiagnostic) throw new Error(`Forbidden route key returned by model: ${forbiddenPath}`);
+    console.warn("[SCRIPT_V2_REFINEMENT_QUARANTINED]", { reason: "forbidden_authority", path: forbiddenPath });
+    return buildBlockedRefinementValidation(message, "forbidden_authority");
   }
 
-  if (!Array.isArray(data.questions)) {
-    throw new Error("refinement questions must be an array");
-  }
-  if (data.questions.length > 1) {
-    throw new Error("refinement questions must contain at most one question");
-  }
-  for (const question of data.questions) validateRefinementQuestion(question);
-
-  if (!Array.isArray(data.options)) {
-    throw new Error("refinement options must be an array");
-  }
-  if (data.options.length > 4) {
-    throw new Error("refinement options must contain at most four options");
-  }
-  for (const option of data.options) validateRefinementOption(option);
-
-  if (data.patch != null && !isPlainObject(data.patch)) {
-    throw new Error("refinement patch must be an object");
-  }
-  if (data.blueprint_patch != null && !isPlainObject(data.blueprint_patch)) {
-    throw new Error("refinement blueprint_patch must be an object");
+  const unknownTopLevel = Object.keys(data).find((key) => !REFINEMENT_MODEL_TOP_LEVEL_KEYS.has(key));
+  if (unknownTopLevel) {
+    if (strictDiagnostic) throw new Error(`refinement model response contains unsupported key: ${unknownTopLevel}`);
+    console.warn("[SCRIPT_V2_REFINEMENT_QUARANTINED]", { reason: "unsupported_top_level", key: unknownTopLevel });
+    return buildBlockedRefinementValidation(message, "unsupported_top_level");
   }
 
-  validateRefinementEchoes(data.meta, surfaceRequest);
-  return data;
+  if (Object.prototype.hasOwnProperty.call(data, "meta")) {
+    if (strictDiagnostic) throw new Error("refinement model meta echoes are not accepted in V2 diagnostics");
+    console.warn("[SCRIPT_V2_REFINEMENT_SIDECAR_DROPPED]", { reason: "model_meta_ignored" });
+  }
+
+  const intent = safeTrim(data.user_intent_label);
+  if (!REFINEMENT_INTENT_LABELS.has(intent)) {
+    console.warn("[SCRIPT_V2_REFINEMENT_QUARANTINED]", { reason: "invalid_intent" });
+    return buildBlockedRefinementValidation(message, "invalid_intent");
+  }
+
+  const anchorHint = typeof data.anchor_hint === "string" && REFINEMENT_ALLOWED_ANCHORS.has(data.anchor_hint.trim())
+    ? data.anchor_hint.trim()
+    : null;
+  if (Object.prototype.hasOwnProperty.call(data, "anchor_hint") && anchorHint === null) {
+    console.warn("[SCRIPT_V2_REFINEMENT_SIDECAR_DROPPED]", { reason: "invalid_anchor_hint" });
+  }
+
+  const questionInspection = inspectRefinementQuestions(data.questions);
+  const optionInspection = inspectRefinementOptions(data.options);
+  const patchInspection = inspectRefinementBlueprintPatch(data.blueprint_patch);
+  const hasLegacyPatch = Object.prototype.hasOwnProperty.call(data, "patch");
+  const providerSelectedOptionId = safeTrim(data.selected_option_id) || null;
+
+  if (hasLegacyPatch) {
+    console.warn("[SCRIPT_V2_REFINEMENT_SIDECAR_DROPPED]", { reason: "legacy_patch_rejected" });
+  }
+
+  const accepted = {
+    status: STATUSES.OK,
+    message,
+    user_intent_label: intent,
+    anchor_hint: anchorHint,
+    selected_option_id: null,
+    questions: [],
+    options: [],
+    blueprint_patch: null,
+    diagnostic_reason: null
+  };
+
+  if (intent === "actionable_change") {
+    if (hasLegacyPatch || !patchInspection.valid || !patchInspection.non_empty) {
+      return buildBlockedRefinementValidation(message, "actionable_patch_required");
+    }
+    accepted.blueprint_patch = patchInspection.value;
+    return accepted;
+  }
+
+  if (intent === "asks_question") {
+    if (!questionInspection.exactly_one_valid) {
+      return buildBlockedRefinementValidation(message, "required_question_invalid");
+    }
+    accepted.questions = questionInspection.values;
+    return accepted;
+  }
+
+  if (intent === "wants_more_options") {
+    if (optionInspection.values.length < 1) {
+      return buildBlockedRefinementValidation(message, "required_options_invalid");
+    }
+    accepted.options = optionInspection.values;
+    return accepted;
+  }
+
+  if (intent === "ready_to_continue") {
+    const hasPatchSidecar = hasLegacyPatch || (patchInspection.present && patchInspection.non_empty) || (patchInspection.present && !patchInspection.valid);
+    const hasQuestionSidecar = questionInspection.present && (questionInspection.raw_non_empty || !questionInspection.container_valid);
+    const hasOptionSidecar = optionInspection.present && (optionInspection.raw_non_empty || !optionInspection.container_valid);
+    if (hasPatchSidecar || hasQuestionSidecar || hasOptionSidecar || providerSelectedOptionId) {
+      return buildBlockedRefinementValidation(message, "ready_state_sidecar_conflict");
+    }
+    return accepted;
+  }
+
+  if (intent === "hold_or_not_ready") {
+    return accepted;
+  }
+
+  if (intent === "option_selection") {
+    if (hasLegacyPatch || !patchInspection.valid || !patchInspection.non_empty) {
+      return buildBlockedRefinementValidation(message, "option_selection_patch_required");
+    }
+    const structuredId = getStructuredRefinementOptionId(surfaceRequest);
+    const trustedIds = getTrustedRefinementOptionIds(surfaceRequest);
+    let selectedId = null;
+    if (structuredId) {
+      if (!trustedIds.has(structuredId)) return buildBlockedRefinementValidation(message, "structured_option_id_mismatch");
+      if (providerSelectedOptionId && providerSelectedOptionId !== structuredId) return buildBlockedRefinementValidation(message, "structured_provider_id_conflict");
+      selectedId = structuredId;
+    } else {
+      if (!providerSelectedOptionId || !trustedIds.has(providerSelectedOptionId)) return buildBlockedRefinementValidation(message, "typed_option_id_mismatch");
+      selectedId = providerSelectedOptionId;
+    }
+    accepted.selected_option_id = selectedId;
+    accepted.blueprint_patch = patchInspection.value;
+    return accepted;
+  }
+
+  if (intent === "unclear_dissatisfaction") {
+    if (questionInspection.exactly_one_valid) accepted.questions = questionInspection.values;
+    if (optionInspection.values.length) accepted.options = optionInspection.values;
+    return accepted;
+  }
+
+  // brief_or_context, alternative_request, new_cycle_request and off_topic_or_unclear
+  // keep only the canonical intent/message/soft anchor. Mutation and sidecar data are dropped.
+  return accepted;
 }
 
-function validateRefinementQuestion(question) {
-  if (!isPlainObject(question)) throw new Error("refinement question must be an object");
-  assertExactObjectKeys(question, REFINEMENT_QUESTION_KEYS, "refinement question");
-  assertNonEmptyModelString(question.id, "refinement question id");
-  assertNonEmptyModelString(question.text, "refinement question text");
-  assertNonEmptyModelString(question.reason, "refinement question reason");
-  if (typeof question.target_anchor !== "string" || !REFINEMENT_ALLOWED_ANCHORS.has(question.target_anchor.trim())) {
-    throw new Error(`refinement question target_anchor is not allowed: ${question.target_anchor}`);
-  }
+function buildBlockedRefinementValidation(message, diagnosticReason) {
+  return {
+    status: STATUSES.BLOCKED,
+    message,
+    user_intent_label: null,
+    anchor_hint: null,
+    selected_option_id: null,
+    questions: [],
+    options: [],
+    blueprint_patch: null,
+    diagnostic_reason: diagnosticReason || "blocked"
+  };
 }
 
-function validateRefinementOption(option) {
-  if (!isPlainObject(option)) throw new Error("refinement option must be an object");
-  assertExactObjectKeys(option, REFINEMENT_OPTION_KEYS, "refinement option");
-  assertNonEmptyModelString(option.id, "refinement option id");
-  assertNonEmptyModelString(option.label, "refinement option label");
-  if (typeof option.target_anchor !== "string" || !REFINEMENT_ALLOWED_ANCHORS.has(option.target_anchor.trim())) {
-    throw new Error(`refinement option target_anchor is not allowed: ${option.target_anchor}`);
+function findForbiddenRefinementAuthorityPath(value) {
+  for (const path of collectObjectPaths(value)) {
+    const last = path.split(".").pop();
+    if (FORBIDDEN_ROUTE_KEYS.has(path) || FORBIDDEN_ROUTE_KEYS.has(last)) return path;
   }
-  if (typeof option.mode !== "string" || !REFINEMENT_OPTION_MODES.has(option.mode.trim())) {
-    throw new Error(`refinement option mode is not allowed: ${option.mode}`);
+  return null;
+}
+
+function inspectRefinementQuestions(value) {
+  if (value === undefined || value === null) {
+    return { present: false, container_valid: true, raw_non_empty: false, exactly_one_valid: false, values: [] };
   }
-  if (option.description != null && typeof option.description !== "string") throw new Error("refinement option description must be a string");
-  if (option.effect != null && typeof option.effect !== "string") throw new Error("refinement option effect must be a string");
-  if (option.recommended != null && typeof option.recommended !== "boolean") throw new Error("refinement option recommended must be a boolean");
+  if (!Array.isArray(value) || value.length > 1) {
+    return { present: true, container_valid: false, raw_non_empty: true, exactly_one_valid: false, values: [] };
+  }
+  if (value.length === 0) {
+    return { present: true, container_valid: true, raw_non_empty: false, exactly_one_valid: false, values: [] };
+  }
+  const normalized = normalizeRefinementQuestionCore(value[0]);
+  return { present: true, container_valid: true, raw_non_empty: true, exactly_one_valid: Boolean(normalized), values: normalized ? [normalized] : [] };
+}
+
+function normalizeRefinementQuestionCore(question) {
+  if (!isPlainObject(question)) return null;
+  if (Object.keys(question).some((key) => !REFINEMENT_QUESTION_KEYS.has(key))) return null;
+  const id = safeTrim(question.id);
+  const text = safeTrim(question.text);
+  const targetAnchor = safeTrim(question.target_anchor);
+  if (!id || !text || !REFINEMENT_ALLOWED_ANCHORS.has(targetAnchor)) return null;
+  const normalized = { id, text, target_anchor: targetAnchor };
+  const reason = safeTrim(question.reason);
+  if (reason) normalized.reason = reason;
+  return normalized;
+}
+
+function inspectRefinementOptions(value) {
+  if (value === undefined || value === null) {
+    return { present: false, container_valid: true, raw_non_empty: false, values: [] };
+  }
+  if (!Array.isArray(value) || value.length > 4) {
+    return { present: true, container_valid: false, raw_non_empty: true, values: [] };
+  }
+  const values = value.map(normalizeRefinementOptionCore).filter(Boolean);
+  return { present: true, container_valid: true, raw_non_empty: value.length > 0, values };
+}
+
+function normalizeRefinementOptionCore(option) {
+  if (!isPlainObject(option)) return null;
+  if (Object.keys(option).some((key) => !REFINEMENT_OPTION_KEYS.has(key))) return null;
+  const id = safeTrim(option.id);
+  const label = safeTrim(option.label);
+  const targetAnchor = safeTrim(option.target_anchor);
+  const mode = safeTrim(option.mode);
+  if (!id || !label || !REFINEMENT_ALLOWED_ANCHORS.has(targetAnchor) || !REFINEMENT_OPTION_MODES.has(mode)) return null;
+  const normalized = { id, label, target_anchor: targetAnchor, mode };
+  const description = safeTrim(option.description);
+  const effect = safeTrim(option.effect);
+  if (description) normalized.description = description;
+  if (effect) normalized.effect = effect;
+  if (typeof option.recommended === "boolean") normalized.recommended = option.recommended;
+  return normalized;
+}
+
+function inspectRefinementBlueprintPatch(value) {
+  if (value === undefined || value === null) {
+    return { present: false, valid: true, non_empty: false, value: null };
+  }
+  if (!isPlainObject(value)) {
+    return { present: true, valid: false, non_empty: false, value: null };
+  }
+  try {
+    assertPatchAllowed(value, EXECUTION_SURFACES.REFINEMENT, { allowEmpty: true });
+  } catch (error) {
+    console.warn("[SCRIPT_V2_REFINEMENT_SIDECAR_DROPPED]", { reason: "blueprint_patch_invalid", diagnostic: safeTrim(error && error.message) });
+    return { present: true, valid: false, non_empty: false, value: null };
+  }
+  const nonEmpty = hasMeaningfulPatch(value);
+  return {
+    present: true,
+    valid: true,
+    non_empty: nonEmpty,
+    value: nonEmpty ? sanitizeNestedRefinementPatch(value) : null
+  };
+}
+
+function sanitizeNestedRefinementPatch(value) {
+  if (!isPlainObject(value)) return null;
+  const out = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (isPlainObject(item)) {
+      const nested = sanitizeNestedRefinementPatch(item);
+      if (nested && Object.keys(nested).length) out[key] = nested;
+      continue;
+    }
+    out[key] = sanitizePatchValue(item);
+  }
+  return out;
+}
+
+function getTrustedRefinementOptionIds(surfaceRequest) {
+  const options = surfaceRequest?.blueprint?.system_state?.refinement_state?.options_context;
+  const ids = new Set();
+  if (!Array.isArray(options)) return ids;
+  for (const option of options) {
+    const id = safeTrim(option && option.id);
+    if (id) ids.add(id);
+  }
+  return ids;
+}
+
+function getStructuredRefinementOptionId(surfaceRequest) {
+  const input = surfaceRequest && surfaceRequest.user_input;
+  if (!isPlainObject(input) || input.type !== "option_selection") return null;
+  return safeTrim(input.id) || null;
 }
 
 function assertExactObjectKeys(value, allowedKeys, label) {
@@ -1274,16 +1478,6 @@ function buildTrustedRefinementEchoes(surfaceRequest) {
     video_type_echo: safeTrim(surfaceRequest?.blueprint?.meta?.video_type),
     language_echo: surfaceRequest?.language || "ru"
   };
-}
-
-function validateRefinementEchoes(meta, surfaceRequest) {
-  if (!isPlainObject(meta)) throw new Error("refinement meta echoes are required");
-  assertExactObjectKeys(meta, REFINEMENT_META_KEYS, "refinement meta");
-  const expected = buildTrustedRefinementEchoes(surfaceRequest);
-  for (const key of REFINEMENT_META_KEYS) {
-    assertNonEmptyModelString(meta[key], `refinement meta.${key}`);
-    if (meta[key].trim() !== expected[key]) throw new Error(`refinement echo mismatch: ${key}`);
-  }
 }
 
 function validateAlignmentResponse(modelRaw) {
@@ -1415,16 +1609,34 @@ function normalizeDevelopmentResponse(validated) {
 }
 
 function normalizeRefinementResponse(validated) {
-  const patch = sanitizePatchByPolicy(getModelPatchObject(validated), EXECUTION_SURFACES.REFINEMENT);
+  if (validated.status === STATUSES.BLOCKED) {
+    return {
+      status: STATUSES.BLOCKED,
+      output: {
+        message: normalizeRefinementPublicMessage(validated.message),
+        user_intent_label: null,
+        anchor_hint: null,
+        selected_option_id: null,
+        questions: [],
+        options: []
+      },
+      blueprint_patch: null
+    };
+  }
+
   return {
+    status: STATUSES.OK,
     output: {
-      message: safeTrim(validated.message),
-      user_intent_label: validated.user_intent_label.trim(),
-      anchor_hint: normalizeRefinementAnchorHint(validated.anchor_hint),
-      questions: normalizeRefinementQuestions(validated.questions),
-      options: normalizeOptions(validated.options)
+      message: normalizeRefinementPublicMessage(validated.message),
+      user_intent_label: validated.user_intent_label,
+      anchor_hint: validated.anchor_hint || null,
+      selected_option_id: validated.user_intent_label === "option_selection"
+        ? validated.selected_option_id
+        : null,
+      questions: Array.isArray(validated.questions) ? validated.questions : [],
+      options: Array.isArray(validated.options) ? validated.options : []
     },
-    blueprint_patch: Object.keys(patch).length ? patch : null
+    blueprint_patch: validated.blueprint_patch || null
   };
 }
 
@@ -1433,33 +1645,18 @@ function normalizeRefinementPublicMessage(message) {
 }
 
 function normalizeRefinementAnchorHint(value) {
-  return safeTrim(value);
+  const normalized = safeTrim(value);
+  return REFINEMENT_ALLOWED_ANCHORS.has(normalized) ? normalized : null;
 }
 
 function normalizeRefinementQuestions(value) {
   if (!Array.isArray(value)) return [];
-  return value.map((question) => ({
-    id: safeTrim(question.id),
-    text: safeTrim(question.text),
-    target_anchor: safeTrim(question.target_anchor),
-    reason: safeTrim(question.reason)
-  }));
+  return value.map(normalizeRefinementQuestionCore).filter(Boolean);
 }
 
 function normalizeOptions(value) {
   if (!Array.isArray(value)) return [];
-  return value.map((option) => {
-    const normalized = {
-      id: safeTrim(option.id),
-      label: safeTrim(option.label),
-      target_anchor: safeTrim(option.target_anchor),
-      mode: safeTrim(option.mode)
-    };
-    if (option.description != null && safeTrim(option.description)) normalized.description = safeTrim(option.description);
-    if (option.effect != null && safeTrim(option.effect)) normalized.effect = safeTrim(option.effect);
-    if (typeof option.recommended === "boolean") normalized.recommended = option.recommended;
-    return normalized;
-  });
+  return value.map(normalizeRefinementOptionCore).filter(Boolean);
 }
 
 function isForbiddenRefinementPublicMessage(message) {

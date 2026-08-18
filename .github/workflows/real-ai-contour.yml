@@ -13,7 +13,6 @@ jobs:
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
-      LIVI_REAL_AI_ARTIFACT_DIR: ${{ runner.temp }}/livi-real-ai-proxy-artifacts
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -24,6 +23,8 @@ jobs:
           node-version: "22"
 
       - name: Run real AI contour
+        env:
+          LIVI_REAL_AI_ARTIFACT_DIR: ${{ runner.temp }}/livi-real-ai-proxy-artifacts
         run: node tests/live/real-ai-contour.test.js
 
       - name: Upload sanitized contour artifacts

@@ -1,0 +1,36 @@
+name: Real AI Proxy Contour V1
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  real-ai-contour:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+      LIVI_REAL_AI_ARTIFACT_DIR: ${{ runner.temp }}/livi-real-ai-proxy-artifacts
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Run real AI contour
+        run: node tests/live/real-ai-contour.test.js
+
+      - name: Upload sanitized contour artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: real-ai-proxy-contour-v1
+          path: ${{ runner.temp }}/livi-real-ai-proxy-artifacts
+          if-no-files-found: ignore
+          retention-days: 14

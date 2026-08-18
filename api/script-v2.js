@@ -927,13 +927,14 @@ function buildRefinementInput(surfaceRequest) {
     "Return the exact canonical label string; never invent synonyms or shorthand such as refine, edit, change, modify, question, continue, ready, etc.",
     'questions is optional, max 1. Question core: {"id":"...","text":"...","target_anchor":"..."}; reason is optional presentation metadata.',
     'options is optional, max 4. Option core: {"id":"...","label":"...","target_anchor":"...","mode":"blocking|suggestive"}; description, effect, recommended are optional presentation metadata.',
-    "blueprint_patch is the only mutation carrier. Never return legacy patch. Preserve scene_core.seed_scene. Allowed patch paths only: scene_core.main_focus, narrative.scene_setup, narrative.scene_development, visual_direction.emotion.",
+    "blueprint_patch is the only mutation carrier. Never return legacy patch. Never include scene_core.seed_scene in blueprint_patch. If the user asks to preserve the selected basis/seed, leave scene_core.seed_scene unchanged and do NOT return that field in blueprint_patch. Allowed patch paths only: scene_core.main_focus, narrative.scene_setup, narrative.scene_development, visual_direction.emotion.",
+    "Return only actually changed allowed fields in blueprint_patch; do not echo unchanged or protected fields.",
     "For actionable_change return a non-empty blueprint_patch. For asks_question return exactly one valid question. For wants_more_options return at least one valid option.",
     "For ready_to_continue return no non-empty blueprint_patch, questions or options. For hold_or_not_ready do not mutate state-bearing sidecars.",
     "For a typed free-text option_selection while trusted pending options exist, return selected_option_id matching exactly one trusted options_context ID and a non-empty blueprint_patch. For structured option clicks, do not invent or reinterpret the ID.",
     "Infer -> propose -> patch -> ask. Do not ask merely because a field is empty.",
     "For unclear_dissatisfaction: acknowledge uncertainty and use only narrow diagnostic question/options when useful.",
-    "For a local alternative preserve seed_scene. For a fully new scene use new_cycle_request and do not reset the Blueprint yourself.",
+    "For a local alternative leave scene_core.seed_scene unchanged and do not return it in blueprint_patch. For a fully new scene use new_cycle_request and do not reset the Blueprint yourself.",
     "Raw short input such as yes, ok, next, 1, 2 remains raw text and is classified from current context.",
     "Never return route/readiness/stage/system/refinement state, Build permission, Billing/access, Result Schema or final_result authority. No markdown."
   ] : [
@@ -946,13 +947,14 @@ function buildRefinementInput(surfaceRequest) {
     "Возвращай точную canonical label string; никогда не придумывай синонимы или сокращения вроде refine, edit, change, modify, question, continue, ready и т. п.",
     'questions опционален, максимум 1. Core question: {"id":"...","text":"...","target_anchor":"..."}; reason — опциональная presentation metadata.',
     'options опционален, максимум 4. Core option: {"id":"...","label":"...","target_anchor":"...","mode":"blocking|suggestive"}; description, effect, recommended — опциональная presentation metadata.',
-    "blueprint_patch — единственный mutation carrier. Никогда не возвращай legacy patch. Сохраняй scene_core.seed_scene. Разрешённые patch paths только: scene_core.main_focus, narrative.scene_setup, narrative.scene_development, visual_direction.emotion.",
+    "blueprint_patch — единственный mutation carrier. Никогда не возвращай legacy patch. Никогда не включай scene_core.seed_scene в blueprint_patch. Если пользователь просит сохранить выбранную основу/seed, оставь scene_core.seed_scene без изменений и НЕ возвращай это поле в blueprint_patch. Разрешённые patch paths только: scene_core.main_focus, narrative.scene_setup, narrative.scene_development, visual_direction.emotion.",
+    "В blueprint_patch возвращай только реально изменяемые разрешённые поля; не эхо-повторяй неизменённые или protected fields.",
     "Для actionable_change верни непустой blueprint_patch. Для asks_question верни ровно один валидный question. Для wants_more_options верни минимум один валидный option.",
     "Для ready_to_continue не возвращай непустые blueprint_patch, questions или options. Для hold_or_not_ready не добавляй state-bearing sidecars.",
     "Для typed free-text option_selection при trusted pending options верни selected_option_id, точно совпадающий с одним ID из trusted options_context, и непустой blueprint_patch. Для structured option click не придумывай и не переинтерпретируй ID.",
     "Порядок: Infer -> Propose -> Patch -> Ask. Не спрашивай только потому, что поле пустое.",
     "Для unclear_dissatisfaction признай неопределённость и используй только узкие diagnostic question/options, когда они полезны.",
-    "Для локальной альтернативы сохраняй seed_scene. Для полностью новой сцены используй new_cycle_request и не сбрасывай Blueprint самостоятельно.",
+    "Для локальной альтернативы оставляй scene_core.seed_scene без изменений и не возвращай его в blueprint_patch. Для полностью новой сцены используй new_cycle_request и не сбрасывай Blueprint самостоятельно.",
     "Короткий raw input «да», «ок», «дальше», «1», «2» остаётся raw text и классифицируется по текущему контексту.",
     "Никогда не возвращай authority по route/readiness/stage/system/refinement state, Build, Billing/access, Result Schema или final_result. Без markdown."
   ];

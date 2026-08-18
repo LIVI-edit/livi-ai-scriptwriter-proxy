@@ -9,6 +9,7 @@ const {
   writeSanitizedJson,
   writeSanitizedText,
   writeSanitizedNdjson,
+  captureProviderModelOutput,
 } = require("./helpers/trace-recorder.js");
 
 const HANDLER_PATH = path.resolve(__dirname, "../../api/script-v2.js");
@@ -292,6 +293,7 @@ async function main() {
   let liveCallCount = 0;
   let observedModel = runtimeConfig.model;
   let buildCandidateBlocks = null;
+  let activeSurface = null;
   const startedAt = new Date();
 
   global.fetch = async (url, options = {}) => {
@@ -318,7 +320,31 @@ async function main() {
       call_index: liveCallCount,
       http_status: response.status,
       http_ok: response.ok === true,
+      surface: activeSurface,
     });
+    try {
+      const diagnostic = await captureProviderModelOutput({
+        response,
+        callIndex: liveCallCount,
+        surface: activeSurface,
+        artifactDir: ARTIFACT_DIR,
+      });
+      recorder.record("provider_model_output_capture", {
+        call_index: liveCallCount,
+        http_status: response.status,
+        surface: activeSurface,
+        artifact_file: diagnostic.artifact_file,
+        model_output_json_parse_ok: diagnostic.model_output_json != null,
+        parse_error: diagnostic.parse_error,
+      });
+    } catch (error) {
+      recorder.record("provider_model_output_capture_error", {
+        call_index: liveCallCount,
+        http_status: response.status,
+        surface: activeSurface,
+        error: { name: error && error.name, code: error && error.code, message: error && error.message },
+      });
+    }
     return response;
   };
 
@@ -330,6 +356,7 @@ async function main() {
   try {
     for (let index = 0; index < SURFACES.length; index += 1) {
       const surface = SURFACES[index];
+      activeSurface = surface;
       const requestBody = requestForSurface(surface);
       if (surface === "development") assert.equal(requestBody.user_input, null, "Development must use user_input:null");
       if (surface === "refinement") assert.equal(requestBody.user_input.raw_text, FIXED_REFINEMENT_INPUT);

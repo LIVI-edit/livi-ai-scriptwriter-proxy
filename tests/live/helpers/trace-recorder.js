@@ -69,6 +69,75 @@ function writeSanitizedNdjson(filePath, values) {
   fs.writeFileSync(filePath, content ? `${content}\n` : "", "utf8");
 }
 
+function extractProviderModelOutputText(providerPayload) {
+  if (!providerPayload || typeof providerPayload !== "object") return "";
+  return (
+    providerPayload.output_text ||
+    (Array.isArray(providerPayload.output)
+      ? providerPayload.output
+          .flatMap((item) => item.content || [])
+          .filter((item) => item.type === "output_text" && item.text)
+          .map((item) => item.text)
+          .join("\n")
+      : "")
+  );
+}
+
+function providerModelOutputArtifactName(callIndex, surface) {
+  const index = String(Number(callIndex) || 0).padStart(2, "0");
+  const safeSurface = String(surface || "unknown")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "_") || "unknown";
+  return `provider_model_output_${index}_${safeSurface}.json`;
+}
+
+async function captureProviderModelOutput({ response, callIndex, surface, artifactDir }) {
+  const diagnostic = {
+    call_index: Number(callIndex) || 0,
+    http_status: Number(response && response.status) || 0,
+    surface: surface ? String(surface) : null,
+    model_output_text: null,
+    model_output_json: null,
+    parse_error: null,
+  };
+
+  try {
+    if (!response || typeof response.clone !== "function") {
+      throw Object.assign(new Error("Provider Response.clone() is unavailable"), { code: "PROVIDER_RESPONSE_CLONE_UNAVAILABLE" });
+    }
+    const providerPayload = await response.clone().json();
+    const modelOutputText = extractProviderModelOutputText(providerPayload);
+    if (!modelOutputText) {
+      diagnostic.parse_error = {
+        code: "MODEL_OUTPUT_TEXT_MISSING",
+        message: "Provider response contained no extractable model output text.",
+      };
+    } else {
+      diagnostic.model_output_text = modelOutputText;
+      try {
+        diagnostic.model_output_json = JSON.parse(modelOutputText);
+      } catch (error) {
+        diagnostic.parse_error = {
+          code: "MODEL_OUTPUT_JSON_PARSE_FAILED",
+          name: error && error.name ? String(error.name) : "Error",
+          message: error && error.message ? String(error.message) : "Model output JSON parse failed.",
+        };
+      }
+    }
+  } catch (error) {
+    diagnostic.parse_error = {
+      code: error && error.code ? String(error.code) : "PROVIDER_RESPONSE_JSON_PARSE_FAILED",
+      name: error && error.name ? String(error.name) : "Error",
+      message: error && error.message ? String(error.message) : "Provider response diagnostic capture failed.",
+    };
+  }
+
+  const fileName = providerModelOutputArtifactName(callIndex, surface);
+  writeSanitizedJson(path.join(path.resolve(artifactDir), fileName), diagnostic);
+  return { ...diagnostic, artifact_file: fileName };
+}
+
 function createTraceRecorder(options = {}) {
   const artifactDir = path.resolve(options.artifactDir || "tests/live/artifacts/proxy");
   const events = [];
@@ -102,5 +171,8 @@ module.exports = Object.freeze({
   writeSanitizedJson,
   writeSanitizedText,
   writeSanitizedNdjson,
+  extractProviderModelOutputText,
+  providerModelOutputArtifactName,
+  captureProviderModelOutput,
   createTraceRecorder,
 });

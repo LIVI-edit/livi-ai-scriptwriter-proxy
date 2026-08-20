@@ -15,19 +15,27 @@ const {
 const HANDLER_PATH = path.resolve(__dirname, "../../api/script-v2.js");
 const ARTIFACT_DIR = path.resolve(process.env.LIVI_REAL_AI_ARTIFACT_DIR || path.resolve(__dirname, "artifacts/proxy"));
 const ACCEPTED_BASELINE_ID = "proxy:090af4bae8f216d9b3f390b0036aa4509e15ac48c778eec30049b6469be9db8c";
-const TEST_VERSION = "REAL_AI_PROXY_CONTOUR_V1_CORRECTED_20260817";
-const SCENARIO_ID = "REAL_AI_JOURNEY_V1_INTERACTIVE_CHOICE";
+const TEST_VERSION = "REAL_AI_PROXY_MINIMAL_REFINEMENT_MVP_TEST_ONLY_20260820";
+const SCENARIO_ID = "REAL_AI_MINIMAL_REFINEMENT_MVP_INTERACTIVE_CHOICE_20260820";
 const FIXED_REFINEMENT_INPUT = "Сохрани выбранную основу. Сделай точку выбора зрителя визуально понятной, без мрачного финала.";
-const MAX_LIVE_CALLS = 6;
-const SURFACES = Object.freeze(["scene_ideas", "selection", "development", "refinement", "alignment", "build"]);
+const MAX_LIVE_CALLS = 7;
+const STEPS = Object.freeze([
+  Object.freeze({ id: "scene_ideas", stage: "scene_ideas" }),
+  Object.freeze({ id: "selection", stage: "selection" }),
+  Object.freeze({ id: "development", stage: "development" }),
+  Object.freeze({ id: "refinement_chat", stage: "refinement", operation: "chat" }),
+  Object.freeze({ id: "refinement_apply", stage: "refinement", operation: "apply" }),
+  Object.freeze({ id: "alignment", stage: "alignment" }),
+  Object.freeze({ id: "build", stage: "build" }),
+]);
 const FORBIDDEN_KEYS = new Set([
   "next_stage", "route", "route_decision", "go_to_alignment", "go_to_build", "build_now",
   "move_next", "finish", "ready_hint", "response_stage", "ready_for_final_assembly",
   "semantic_readiness", "readiness_reason", "system_state", "interaction_state",
   "refinement_state", "current_stage", "open_anchor", "active_anchor", "open_question",
   "pending_options", "build_status", "billing", "plan", "paywall", "entitlement", "final_result",
+  "result_schema", "allowed_blocks", "blueprint", "changes", "patch",
 ]);
-
 const PATCH_PATHS = Object.freeze({
   scene_ideas: new Set(),
   selection: new Set(["scene_core.seed_scene"]),
@@ -36,7 +44,6 @@ const PATCH_PATHS = Object.freeze({
   alignment: new Set(),
   build: new Set(),
 });
-
 const RESULT_SCHEMA_FIXTURE = Object.freeze({
   version: "v1",
   plan_tier: "pro",
@@ -77,7 +84,7 @@ function requireRuntimeConfig() {
 function baseBlueprint(stage) {
   return {
     meta: {
-      blueprint_id: "bp_real_ai_v1_interactive_choice",
+      blueprint_id: "bp_real_ai_minimal_refinement_interactive_choice",
       scriptwriter_role: "film_director",
       video_type: "interactive",
       language: "ru",
@@ -101,25 +108,15 @@ function baseBlueprint(stage) {
     system_state: {
       current_stage: stage === "build" ? "alignment" : stage,
       selected_advanced_options: ["branching"],
-      refinement_state: {
-        active_anchor: "structure",
-        open_anchor: stage === "refinement",
-        pending_options: false,
-        options_context: null,
-        open_question: false,
-        question_context: null,
-        unresolved_user_intent: false,
-        user_ready_signal: false,
-      },
     },
   };
 }
 
-function requestForSurface(surface) {
+function requestForStep(step, context = {}) {
   const common = {
-    stage: surface,
+    stage: step.stage,
     language: "ru",
-    blueprint: baseBlueprint(surface),
+    blueprint: baseBlueprint(step.stage),
     ui_context: {
       video_type: "interactive",
       scriptwriter_role: "film_director",
@@ -129,22 +126,39 @@ function requestForSurface(surface) {
       scene_action: "choice",
       selected_extensions: ["branching"],
     },
-    meta: { source: "real_ai_v1_proxy_contour" },
+    meta: { source: "real_ai_minimal_refinement_mvp_proxy_contour" },
     user_input: null,
   };
 
-  if (surface === "selection") {
+  if (step.stage === "selection") {
     common.user_input = {
       mode: "scene_idea_click",
       selected_index: 1,
       slot: "variation",
       seed_scene: "Герой подходит к лампе NOVA, а зритель выбирает один из двух режимов света.",
     };
-  } else if (surface === "refinement") {
-    common.user_input = { raw_text: FIXED_REFINEMENT_INPUT };
-  } else if (surface === "build") {
+  } else if (step.id === "refinement_chat") {
+    common.user_input = FIXED_REFINEMENT_INPUT;
     common.meta = {
-      source: "real_ai_v1_proxy_contour",
+      source: "real_ai_minimal_refinement_mvp_proxy_contour",
+      refinement_operation: "chat",
+      refinement_conversation: [],
+    };
+  } else if (step.id === "refinement_apply") {
+    const assistantMessage = String(context.chatAssistantMessage || "").trim();
+    if (!assistantMessage) throw new Error("REAL_AI_REFINEMENT_CHAT_CONTEXT_MISSING");
+    common.user_input = null;
+    common.meta = {
+      source: "real_ai_minimal_refinement_mvp_proxy_contour",
+      refinement_operation: "apply",
+      refinement_conversation: [
+        { role: "user", content: FIXED_REFINEMENT_INPUT },
+        { role: "assistant", content: assistantMessage },
+      ],
+    };
+  } else if (step.stage === "build") {
+    common.meta = {
+      source: "real_ai_minimal_refinement_mvp_proxy_contour",
       result_schema: RESULT_SCHEMA_FIXTURE,
       applied_plan_context: {
         plan_id: "scriptwriter_pro",
@@ -176,16 +190,18 @@ function createResponseCollector() {
   };
 }
 
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
 function flattenPatch(value, prefix = "", output = []) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return output;
+  if (!isPlainObject(value)) return output;
   for (const [key, child] of Object.entries(value)) {
     const next = prefix ? `${prefix}.${key}` : key;
-    if (child && typeof child === "object" && !Array.isArray(child)) flattenPatch(child, next, output);
+    if (isPlainObject(child)) flattenPatch(child, next, output);
     else output.push(next);
   }
   return output;
 }
-
 function assertNoForbiddenKeys(value, currentPath = "response") {
   if (!value || typeof value !== "object") return;
   if (Array.isArray(value)) {
@@ -197,30 +213,44 @@ function assertNoForbiddenKeys(value, currentPath = "response") {
     assertNoForbiddenKeys(child, `${currentPath}.${key}`);
   }
 }
-
-function assertPatchAllowed(surface, patch) {
+function assertPatchAllowed(stage, patch) {
   if (patch == null) return;
-  const allowed = PATCH_PATHS[surface];
+  const allowed = PATCH_PATHS[stage];
   for (const patchPath of flattenPatch(patch)) {
-    assert.equal(allowed.has(patchPath), true, `${surface} returned forbidden patch path ${patchPath}`);
+    assert.equal(allowed.has(patchPath), true, `${stage} returned forbidden patch path ${patchPath}`);
   }
 }
+function assertUsableMessage(value, label) {
+  assert.equal(typeof value, "string", `${label} must be a string`);
+  assert.ok(value.trim().length > 0, `${label} must be non-empty`);
+}
 
-function assertSurfaceResponse(surface, snapshot) {
-  assert.equal(snapshot.statusCode, 200, `${surface} HTTP status`);
-  assert.ok(snapshot.payload && typeof snapshot.payload === "object", `${surface} response payload missing`);
-  assert.equal(snapshot.payload.stage, surface, `${surface} exact stage mismatch`);
-  assert.equal(snapshot.payload.status, "ok", `${surface} status must be ok`);
-  assertNoForbiddenKeys(snapshot.payload.output, `${surface}.output`);
-  assertNoForbiddenKeys(snapshot.payload.blueprint_patch, `${surface}.blueprint_patch`);
-  assertPatchAllowed(surface, snapshot.payload.blueprint_patch);
+function assertStepResponse(step, snapshot) {
+  assert.equal(snapshot.statusCode, 200, `${step.id} HTTP status`);
+  assert.ok(snapshot.payload && typeof snapshot.payload === "object", `${step.id} response payload missing`);
+  assert.equal(snapshot.payload.stage, step.stage, `${step.id} exact stage mismatch`);
+  assert.equal(snapshot.payload.status, "ok", `${step.id} status must be ok`);
+  assertNoForbiddenKeys(snapshot.payload.output, `${step.id}.output`);
+  assertNoForbiddenKeys(snapshot.payload.blueprint_patch, `${step.id}.blueprint_patch`);
+  assertPatchAllowed(step.stage, snapshot.payload.blueprint_patch);
 
-  if (surface !== "build") {
-    assert.equal(Object.prototype.hasOwnProperty.call(snapshot.payload, "final_result"), false);
-    assert.equal(snapshot.payload.output && Object.prototype.hasOwnProperty.call(snapshot.payload.output, "final_result"), false);
-  } else {
+  if (step.stage !== "build") {
+    assert.equal(Object.prototype.hasOwnProperty.call(snapshot.payload, "final_result"), false, `${step.id} must not return canonical final_result`);
+    assert.equal(snapshot.payload.output && Object.prototype.hasOwnProperty.call(snapshot.payload.output, "final_result"), false, `${step.id}.output must not return canonical final_result`);
+  }
+
+  if (step.id === "refinement_chat") {
+    assertUsableMessage(snapshot.payload.output && snapshot.payload.output.message, "Refinement CHAT message");
+    assert.equal(snapshot.payload.blueprint_patch, null, "Refinement CHAT must be read-only");
+  } else if (step.id === "refinement_apply") {
+    assertUsableMessage(snapshot.payload.output && snapshot.payload.output.message, "Refinement APPLY message");
+    assert.ok(isPlainObject(snapshot.payload.blueprint_patch), "Refinement APPLY blueprint_patch must be an object");
+    const patchPaths = flattenPatch(snapshot.payload.blueprint_patch);
+    assert.ok(patchPaths.length > 0, "standard Refinement APPLY happy path must return a non-empty patch");
+    patchPaths.forEach((patchPath) => assert.equal(PATCH_PATHS.refinement.has(patchPath), true, `APPLY returned forbidden patch path ${patchPath}`));
+  } else if (step.stage === "build") {
     const blocks = snapshot.payload.output && snapshot.payload.output.blocks;
-    assert.ok(blocks && typeof blocks === "object" && !Array.isArray(blocks), "build candidate blocks missing");
+    assert.ok(isPlainObject(blocks), "build candidate blocks missing");
     const allowed = new Set(RESULT_SCHEMA_FIXTURE.blocks);
     const keys = Object.keys(blocks);
     assert.ok(keys.length > 0, "build candidate blocks empty");
@@ -273,12 +303,13 @@ function writeRequiredArtifacts(recorder, metadata, buildCandidateBlocks) {
     provider_events: recorder.events.filter((event) => event && /^provider_/.test(String(event.type || ""))),
   });
   writeSanitizedText(path.join(ARTIFACT_DIR, "summary.md"), [
-    "# Real-AI Proxy Contour V1",
+    "# Real-AI Proxy Minimal Refinement MVP Contour",
     "",
     `Outcome: ${metadata.outcome}`,
     `Failure class: ${metadata.failure_class || "none"}`,
     `Scenario: ${metadata.scenario_version}`,
     `Live AI calls: ${metadata.live_call_count}`,
+    "Refinement operations: CHAT -> APPLY",
     "Automatic AI retry: NO",
     "Canonical final_result created by Proxy: NO",
   ].join("\n"));
@@ -294,6 +325,7 @@ async function main() {
   let observedModel = runtimeConfig.model;
   let buildCandidateBlocks = null;
   let activeSurface = null;
+  let chatAssistantMessage = null;
   const startedAt = new Date();
 
   global.fetch = async (url, options = {}) => {
@@ -354,34 +386,56 @@ async function main() {
 
   const results = [];
   try {
-    for (let index = 0; index < SURFACES.length; index += 1) {
-      const surface = SURFACES[index];
-      activeSurface = surface;
-      const requestBody = requestForSurface(surface);
-      if (surface === "development") assert.equal(requestBody.user_input, null, "Development must use user_input:null");
-      if (surface === "refinement") assert.equal(requestBody.user_input.raw_text, FIXED_REFINEMENT_INPUT);
-      if (surface === "build") {
+    for (let index = 0; index < STEPS.length; index += 1) {
+      const step = STEPS[index];
+      activeSurface = step.id;
+      const requestBody = requestForStep(step, { chatAssistantMessage });
+
+      if (step.stage === "development") assert.equal(requestBody.user_input, null, "Development must use user_input:null");
+      if (step.id === "refinement_chat") {
+        assert.equal(requestBody.stage, "refinement");
+        assert.equal(requestBody.user_input, FIXED_REFINEMENT_INPUT);
+        assert.equal(requestBody.meta.refinement_operation, "chat");
+        assert.ok(Array.isArray(requestBody.meta.refinement_conversation));
+      }
+      if (step.id === "refinement_apply") {
+        assert.equal(requestBody.stage, "refinement");
+        assert.equal(requestBody.user_input, null);
+        assert.equal(requestBody.meta.refinement_operation, "apply");
+        assert.deepEqual(requestBody.meta.refinement_conversation, [
+          { role: "user", content: FIXED_REFINEMENT_INPUT },
+          { role: "assistant", content: chatAssistantMessage },
+        ]);
+      }
+      if (step.stage === "build") {
         assert.ok(Array.isArray(requestBody.meta.result_schema.blocks) && requestBody.meta.result_schema.blocks.length > 0);
       }
 
-      recorder.record("surface_request", { surface, request: requestBody });
-      writeSanitizedJson(path.join(ARTIFACT_DIR, `request_${String(index + 1).padStart(2, "0")}_${surface}.json`), requestBody);
+      recorder.record("surface_request", { surface: step.id, request: requestBody });
+      writeSanitizedJson(path.join(ARTIFACT_DIR, `request_${String(index + 1).padStart(2, "0")}_${step.id}.json`), requestBody);
 
       const collector = createResponseCollector();
       await handler({ method: "POST", body: requestBody }, collector.res);
       const snapshot = collector.snapshot();
-      assertSurfaceResponse(surface, snapshot);
-      if (surface === "build") buildCandidateBlocks = snapshot.payload.output && snapshot.payload.output.blocks || null;
-      results.push({ surface, status: snapshot.payload.status, stage: snapshot.payload.stage });
-      recorder.record("surface_response", { surface, response: snapshot.payload });
-      writeSanitizedJson(path.join(ARTIFACT_DIR, `response_${String(index + 1).padStart(2, "0")}_${surface}.json`), snapshot.payload);
+      assertStepResponse(step, snapshot);
+
+      if (step.id === "refinement_chat") {
+        chatAssistantMessage = snapshot.payload.output.message.trim();
+      }
+      if (step.stage === "build") {
+        buildCandidateBlocks = snapshot.payload.output && snapshot.payload.output.blocks || null;
+      }
+      results.push({ id: step.id, stage: step.stage, operation: step.operation || null, status: snapshot.payload.status });
+      recorder.record("surface_response", { surface: step.id, response: snapshot.payload });
+      writeSanitizedJson(path.join(ARTIFACT_DIR, `response_${String(index + 1).padStart(2, "0")}_${step.id}.json`), snapshot.payload);
     }
 
-    assert.equal(liveCallCount, 6, "standard Proxy contour must perform exactly 6 live AI calls");
+    assert.equal(liveCallCount, MAX_LIVE_CALLS, "standard Proxy Minimal Refinement contour must perform exactly 7 live provider calls");
+    assert.deepEqual(results.map((item) => item.id), STEPS.map((step) => step.id), "Proxy contour step order mismatch");
     const metadata = buildRunMetadata({ outcome: "PASS", failureClass: null, observedModel, liveCallCount, startedAt, results });
     recorder.flush(metadata);
     writeRequiredArtifacts(recorder, metadata, buildCandidateBlocks);
-    console.log(JSON.stringify({ status: "PASS", surfaces: SURFACES.length, live_call_count: liveCallCount }));
+    console.log(JSON.stringify({ status: "PASS", steps: STEPS.length, live_call_count: liveCallCount }));
   } catch (error) {
     recorder.record("failure", { failure_class: classifyFailure(error), error: { name: error && error.name, code: error && error.code, message: error && error.message } });
     const metadata = buildRunMetadata({
@@ -411,8 +465,9 @@ if (require.main === module) {
 module.exports = Object.freeze({
   main,
   requireRuntimeConfig,
-  requestForSurface,
-  assertSurfaceResponse,
+  requestForStep,
+  assertStepResponse,
   classifyFailure,
   RESULT_SCHEMA_FIXTURE,
+  STEPS,
 });

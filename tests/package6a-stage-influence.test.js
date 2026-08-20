@@ -8,7 +8,7 @@ function response(stage,lang='ru',bp=fx.blueprint()){
   if(stage==='scene_ideas') return fx.ideas(lang);
   if(stage==='development') return fx.development(lang);
   if(stage==='alignment') return fx.alignment(lang);
-  if(stage==='refinement') return fx.refinement(lang,{meta:{current_stage_echo:'refinement',role_id_echo:bp.meta.scriptwriter_role,video_type_echo:bp.meta.video_type,language_echo:lang}});
+  if(stage==='refinement') return {message:lang==='en'?'Usable refinement message.':'Рабочий refinement ответ.',suggestions:[],confirmation_label:null};
   return fx.selection(lang);
 }
 async function capture(stage,bp=fx.blueprint(),lang='ru'){
@@ -16,7 +16,7 @@ async function capture(stage,bp=fx.blueprint(),lang='ru'){
   global.fetch=async(_u,req)=>{modelBody=JSON.parse(req.body);return{ok:true,async json(){return{output_text:JSON.stringify(response(stage,lang,bp))}}};};
   delete require.cache[handlerPath];const handler=require(handlerPath);let payload,status;
   const res={setHeader(){},status(c){status=c;return this;},json(v){payload=v;return v;},end(){}};
-  try{await handler({method:'POST',body:{stage,language:lang,blueprint:bp,user_input:{raw_text:'Same topic and same user input'},ui_context:{},meta:{}}},res);assert.equal(status,200);assert.equal(payload.status,'ok');return (modelBody.input||[]).flatMap(x=>x.content||[]).map(x=>x.text||'').join('\n');}
+  try{await handler({method:'POST',body:{stage,language:lang,blueprint:bp,user_input:stage==='refinement'?'Same topic and same user input':{raw_text:'Same topic and same user input'},ui_context:{},meta:stage==='refinement'?{refinement_operation:'chat',refinement_conversation:[]}:{}}},res);assert.equal(status,200);assert.equal(payload.status,'ok');return (modelBody.input||[]).flatMap(x=>x.content||[]).map(x=>x.text||'').join('\n');}
   finally{global.fetch=oldFetch;if(oldKey===undefined)delete process.env.OPENAI_API_KEY;else process.env.OPENAI_API_KEY=oldKey;}
 }
 function bp(overrides={}){return fx.blueprint(overrides);}
@@ -50,10 +50,12 @@ test('branching has early module-specific influence on Scene Ideas',async()=>{
   assert.match(branching,/branching|choice|consequence/i);
 });
 
-test('branching remains available before Build in Development and open-anchor Refinement',async()=>{
-  const b=bp({extensions:{branching:{enabled:true}},system_state:{refinement_state:{active_anchor:'structure',open_anchor:true,pending_options:false,open_question:false}}});
+test('branching remains a quality lens before Build without depending on an open Refinement anchor',async()=>{
+  const b=bp({extensions:{branching:{enabled:true}},system_state:{refinement_state:{active_anchor:'structure',open_anchor:true,pending_options:true,open_question:true}}});
   assert.match(await capture('development',b),/branching|choice|consequence/i);
-  assert.match(await capture('refinement',b),/branching|choice|consequence/i);
+  const refinement=await capture('refinement',b);
+  assert.match(refinement,/branching/);
+  assert.doesNotMatch(refinement,/active_anchor|open_anchor|pending_options|open_question/);
 });
 
 test('result-only/deferred timing and visual_style_extra do not invent early behavior directives',async()=>{
@@ -65,13 +67,16 @@ test('result-only/deferred timing and visual_style_extra do not invent early beh
   assert.equal(devBase,devDeferred);
 });
 
-test('Refinement-bound module directives appear only inside an already open anchor',async()=>{
-  const closed=bp({extensions:{dialogue:{enabled:true}},system_state:{refinement_state:{active_anchor:'conflict',open_anchor:false,pending_options:false,open_question:false}}});
-  const opened=bp({extensions:{dialogue:{enabled:true}},system_state:{refinement_state:{active_anchor:'conflict',open_anchor:true,pending_options:false,open_question:false}}});
+test('Refinement prompt is invariant to retired open-anchor lifecycle state',async()=>{
+  const closed=bp({extensions:{dialogue:{enabled:true}}});
+  closed.system_state.refinement_state={active_anchor:'conflict',open_anchor:false,pending_options:false,open_question:false};
+  const opened=JSON.parse(JSON.stringify(closed));
+  opened.system_state.refinement_state={active_anchor:'visual_tone',open_anchor:true,pending_options:true,open_question:true};
   const closedText=await capture('refinement',closed);
   const openText=await capture('refinement',opened);
-  assert.doesNotMatch(closedText,/dialogue rhythm|spoken exchange/i);
-  assert.match(openText,/dialogue|spoken exchange/i);
+  assert.equal(openText,closedText);
+  assert.match(openText,/dialogue/);
+  assert.doesNotMatch(openText,/active_anchor|open_anchor|pending_options|open_question|visual_tone|conflict/);
 });
 
 test('selected Advanced module never grants route, readiness or Build authority in prompts',async()=>{

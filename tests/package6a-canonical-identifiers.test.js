@@ -69,14 +69,11 @@ function modelFor(stage, language = 'ru', blueprint = fx.blueprint()) {
   if (stage === 'development') return fx.development(language);
   if (stage === 'alignment') return fx.alignment(language);
   if (stage === 'refinement') {
-    return fx.refinement(language, {
-      meta: {
-        current_stage_echo: 'refinement',
-        role_id_echo: expectedRole(blueprint),
-        video_type_echo: expectedType(blueprint),
-        language_echo: language
-      }
-    });
+    return {
+      message: language === 'en' ? 'Usable refinement message.' : 'Рабочий refinement ответ.',
+      suggestions: [],
+      confirmation_label: null
+    };
   }
   return { blocks: { video_overview: 'Usable overview' } };
 }
@@ -105,9 +102,9 @@ async function invoke({ stage = 'scene_ideas', blueprint = fx.blueprint(), langu
     stage,
     language,
     blueprint,
-    user_input: stage === 'selection' ? { seed_scene: 'Chosen scene' } : { raw_text: 'same topic' },
+    user_input: stage === 'selection' ? { seed_scene: 'Chosen scene' } : stage === 'refinement' ? 'same topic' : { raw_text: 'same topic' },
     ui_context: { scene_action: 'raw-ui-ignored' },
-    meta: {},
+    meta: stage === 'refinement' ? { refinement_operation: 'chat', refinement_conversation: [] } : {},
     ...extra
   };
   const before = JSON.parse(JSON.stringify(body));
@@ -270,14 +267,16 @@ test('video_prompt remains a distinct canonical type and canonical extension key
   assert.match(text, /video-prompt intent/);
 });
 
-test('trusted Refinement echoes copy exact canonical Blueprint values', async () => {
+test('Refinement retires trusted V2 echoes while preserving canonical role/type as prompt quality context', async () => {
   for (const role of ROLES) {
     for (const videoType of TYPES) {
       const blueprint = bp({ meta: { scriptwriter_role: role, video_type: videoType } });
       const result = await invoke({ stage: 'refinement', blueprint });
       assert.equal(result.statusCode, 200, `${role}/${videoType}`);
-      assert.equal(result.payload.meta.role_id_echo, role, `${role}/${videoType}`);
-      assert.equal(result.payload.meta.video_type_echo, videoType, `${role}/${videoType}`);
+      assert.deepEqual(result.payload.meta, {}, `${role}/${videoType}`);
+      const text = promptText(result);
+      assert.match(text, new RegExp(`\\b${role}\\b`), `${role}/${videoType}/role`);
+      assert.match(text, new RegExp(`\\b${videoType}\\b`), `${role}/${videoType}/type`);
     }
   }
 });

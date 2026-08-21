@@ -49,22 +49,10 @@ const RESULT_SCHEMA_FIXTURE = Object.freeze({
   plan_tier: "pro",
   video_type: "interactive",
   density_mode: "standard",
-  text_budget_total: 3200,
   blocks: [
     "preview", "video_overview", "visual_emotional_direction", "scene_description",
     "story_concept", "scene_breakdown", "prompt", "production_notes", "branching",
   ],
-  block_character_budget: {
-    preview: 242,
-    video_overview: 242,
-    visual_emotional_direction: 362,
-    scene_description: 543,
-    story_concept: 483,
-    scene_breakdown: 483,
-    prompt: 423,
-    production_notes: 242,
-    branching: 181,
-  },
   selected_advanced_options: ["branching"],
 });
 
@@ -251,11 +239,15 @@ function assertStepResponse(step, snapshot) {
   } else if (step.stage === "build") {
     const blocks = snapshot.payload.output && snapshot.payload.output.blocks;
     assert.ok(isPlainObject(blocks), "build candidate blocks missing");
-    const allowed = new Set(RESULT_SCHEMA_FIXTURE.blocks);
     const keys = Object.keys(blocks);
-    assert.ok(keys.length > 0, "build candidate blocks empty");
-    keys.forEach((key) => assert.equal(allowed.has(key), true, `unknown build block ${key}`));
+    assert.deepEqual([...keys].sort(), [...RESULT_SCHEMA_FIXTURE.blocks].sort(), "build candidate block set must exactly match structural schema");
+    for (const key of RESULT_SCHEMA_FIXTURE.blocks) {
+      assert.equal(typeof blocks[key], "string", `${key} must be a string`);
+      assert.ok(blocks[key].trim().length > 0, `${key} must be non-empty`);
+    }
     assert.equal(Object.prototype.hasOwnProperty.call(snapshot.payload, "final_result"), false, "Proxy must not create final_result");
+    assert.equal(Object.prototype.hasOwnProperty.call(RESULT_SCHEMA_FIXTURE, "text_budget_total"), false, "real-AI oracle must not enforce product character totals");
+    assert.equal(Object.prototype.hasOwnProperty.call(RESULT_SCHEMA_FIXTURE, "block_character_budget"), false, "real-AI oracle must not enforce per-block character budgets");
   }
 }
 

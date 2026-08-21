@@ -712,7 +712,7 @@ async function executeBuildSurface(surfaceRequest) {
 
   let modelRaw;
   try {
-    modelRaw = await callModel(modelInput);
+    modelRaw = await callModel(modelInput, EXECUTION_SURFACES.BUILD);
   } catch (error) {
     logBuildDiagnostic("warn", "build_model_call_failed", {
       message: error?.message || "Build model call failed",
@@ -732,10 +732,29 @@ async function executeBuildSurface(surfaceRequest) {
       parsed_json: buildBuildParsedDiagnostic(modelRaw?.parsed_json),
       raw_response: buildBuildModelRawDiagnostic(modelRaw)
     });
-    throw error;
+    return buildBuildSurfaceErrorEnvelope({
+      surfaceRequest,
+      code: "BUILD_RESPONSE_INVALID",
+      message: "Build response failed structural validation."
+    });
   }
 
   logBuildDiagnostic("debug", "build_parsed_json", buildBuildParsedDiagnostic(validated));
+
+  const candidateValidation = validateBuildCandidateBlocks(validated.blocks, resultSchema);
+  if (candidateValidation.ok !== true) {
+    logBuildDiagnostic("warn", "build_candidate_blocks_invalid", {
+      code: candidateValidation.code,
+      message: candidateValidation.message,
+      parsed_json: buildBuildParsedDiagnostic(validated),
+      result_schema: buildResultSchemaDiagnostic(resultSchema)
+    });
+    return buildBuildSurfaceErrorEnvelope({
+      surfaceRequest,
+      code: candidateValidation.code,
+      message: candidateValidation.message
+    });
+  }
 
   let normalized;
   try {
@@ -1110,9 +1129,7 @@ function buildBuildInput(surfaceRequest, resultSchemaSnapshot = null) {
                   "Do not return explanation.",
                   "Do not return output.",
                   "Do not return any keys outside blocks.",
-                  "If one allowed block cannot be generated, omit only that block.",
-                  "If allowed_blocks is non-empty, do not return an empty blocks object.",
-                  "Generate every possible allowed block from the Blueprint.",
+                  "Return every allowed block from the Blueprint; every listed block is mandatory.",
                   "Use result_schema as a hard pre-generation constraint.",
                   "Generate only the allowed blocks from result_schema.blocks.",
                   "Do not generate any forbidden blocks.",
@@ -1134,9 +1151,7 @@ function buildBuildInput(surfaceRequest, resultSchemaSnapshot = null) {
                   "Не возвращай explanation.",
                   "Не возвращай output.",
                   "Не возвращай любые ключи вне blocks.",
-                  "Если один разрешённый блок невозможно сгенерировать, пропусти только этот блок.",
-                  "Если allowed_blocks непустой, не возвращай пустой объект blocks.",
-                  "Сгенерируй каждый возможный разрешённый блок из Blueprint.",
+                  "Верни каждый разрешённый блок из Blueprint; каждый перечисленный блок обязателен.",
                   "Используй result_schema как жёсткое pre-generation ограничение.",
                   "Генерируй только разрешённые блоки из result_schema.blocks.",
                   "Не генерируй запрещённые блоки.",
@@ -1166,10 +1181,12 @@ function buildBuildInput(surfaceRequest, resultSchemaSnapshot = null) {
 // Model call
 // ============================================================
 
-async function callModel(modelInput) {
+async function callModel(modelInput, executionSurface = null) {
   if (!process.env.OPENAI_API_KEY) {
     throw new Error("Missing OPENAI_API_KEY");
   }
+
+  const maxOutputTokens = executionSurface === EXECUTION_SURFACES.BUILD ? 8192 : 1400;
 
   const response = await fetch(OPENAI_URL, {
     method: "POST",
@@ -1185,7 +1202,7 @@ async function callModel(modelInput) {
           type: "json_object"
         }
       },
-      max_output_tokens: 1400
+      max_output_tokens: maxOutputTokens
     })
   });
 
@@ -1633,6 +1650,40 @@ function isForbiddenAlignmentPublicMessage(message) {
     /\bstage\b/, /\bresult_schema\b/, /\bfinal_result\b/
   ];
   return forbiddenPatterns.some((pattern) => pattern.test(normalized));
+}
+
+function validateBuildCandidateBlocks(candidateBlocks, resultSchema) {
+  if (!isPlainObject(candidateBlocks)) {
+    return { ok: false, code: "BUILD_BLOCKS_INVALID", message: "Build candidate blocks must be an object." };
+  }
+
+  const allowedBlocks = getBuildAllowedBlocks(resultSchema);
+  const allowedSet = new Set(allowedBlocks);
+  const candidateKeys = Object.keys(candidateBlocks);
+
+  for (const key of candidateKeys) {
+    if (!allowedSet.has(key)) {
+      return { ok: false, code: "BUILD_BLOCK_EXTRA", message: `Build candidate contains an extra block: ${key}` };
+    }
+  }
+
+  for (const block of allowedBlocks) {
+    if (!Object.prototype.hasOwnProperty.call(candidateBlocks, block)) {
+      return { ok: false, code: "BUILD_BLOCK_MISSING", message: `Build candidate is missing required block: ${block}` };
+    }
+    if (typeof candidateBlocks[block] !== "string") {
+      return { ok: false, code: "BUILD_BLOCK_TYPE_INVALID", message: `Build block must be a string: ${block}` };
+    }
+    if (!candidateBlocks[block].trim()) {
+      return { ok: false, code: "BUILD_BLOCK_EMPTY", message: `Build block must be non-empty: ${block}` };
+    }
+  }
+
+  if (candidateKeys.length !== allowedBlocks.length) {
+    return { ok: false, code: "BUILD_BLOCKS_INVALID", message: "Build candidate block set does not exactly match the transported schema." };
+  }
+
+  return { ok: true };
 }
 
 function normalizeBuildResponse(validated, resultSchema = {}) {
@@ -2507,9 +2558,6 @@ function buildBuildRequestDiagnostic(surfaceRequest, rawSchema) {
 }
 
 function buildResultSchemaDiagnostic(schema) {
-  const blockCharacterBudget = isPlainObject(schema?.block_character_budget)
-    ? schema.block_character_budget
-    : {};
   const allowedBlocks = Array.isArray(schema?.blocks)
     ? schema.blocks.map((block) => normalizeDiagnosticString(block)).filter(Boolean)
     : [];
@@ -2519,7 +2567,6 @@ function buildResultSchemaDiagnostic(schema) {
     keys: getPlainObjectKeys(schema),
     allowed_block_ids: allowedBlocks,
     allowed_block_count: allowedBlocks.length,
-    block_character_budget_keys: Object.keys(blockCharacterBudget),
     selected_advanced_options_count: Array.isArray(schema?.selected_advanced_options)
       ? schema.selected_advanced_options.length
       : 0
@@ -2630,9 +2677,7 @@ function validateBuildResultSchemaContext(rawSchema) {
     "plan_tier",
     "video_type",
     "density_mode",
-    "text_budget_total",
     "blocks",
-    "block_character_budget",
   ];
 
   const allowedKeys = new Set([
@@ -2660,11 +2705,20 @@ function validateBuildResultSchemaContext(rawSchema) {
     }
   }
 
-  const blocks = Array.isArray(rawSchema.blocks)
-    ? rawSchema.blocks.map((block) => safeTrim(block)).filter(Boolean)
-    : [];
+  if (typeof rawSchema.version !== "string" || !safeTrim(rawSchema.version)) {
+    return { ok: false, code: "BUILD_RESULT_SCHEMA_INVALID", message: "Build result schema version must be a non-empty string." };
+  }
+  if (!["free", "pro", "ultra"].includes(rawSchema.plan_tier)) {
+    return { ok: false, code: "BUILD_RESULT_SCHEMA_INVALID", message: "Build result schema plan_tier is invalid." };
+  }
+  if (!["video", "promo", "interactive", "video_prompt", "image_prompt"].includes(rawSchema.video_type)) {
+    return { ok: false, code: "BUILD_RESULT_SCHEMA_INVALID", message: "Build result schema video_type is invalid." };
+  }
+  if (!["compact", "standard", "extended"].includes(rawSchema.density_mode)) {
+    return { ok: false, code: "BUILD_RESULT_SCHEMA_INVALID", message: "Build result schema density_mode is invalid." };
+  }
 
-  if (!blocks.length) {
+  if (!Array.isArray(rawSchema.blocks) || rawSchema.blocks.length === 0) {
     return {
       ok: false,
       code: "BUILD_RESULT_SCHEMA_INVALID",
@@ -2672,54 +2726,19 @@ function validateBuildResultSchemaContext(rawSchema) {
     };
   }
 
-  if (new Set(blocks).size !== blocks.length) {
-    return {
-      ok: false,
-      code: "BUILD_RESULT_SCHEMA_INVALID",
-      message: "Build result schema blocks must be unique."
-    };
-  }
-
-  const textBudgetTotal = Number(rawSchema.text_budget_total);
-  if (!Number.isFinite(textBudgetTotal) || textBudgetTotal <= 0) {
-    return {
-      ok: false,
-      code: "BUILD_RESULT_SCHEMA_INVALID",
-      message: "Build result schema text_budget_total must be a positive number."
-    };
-  }
-
-  if (!isPlainObject(rawSchema.block_character_budget)) {
-    return {
-      ok: false,
-      code: "BUILD_RESULT_SCHEMA_INVALID",
-      message: "Build result schema block_character_budget must be an object."
-    };
-  }
-
-  for (const [blockKey, budget] of Object.entries(rawSchema.block_character_budget)) {
-    const normalizedBlockKey = safeTrim(blockKey);
-
-    if (!blocks.includes(normalizedBlockKey)) {
-      return {
-        ok: false,
-        code: "BUILD_RESULT_SCHEMA_INVALID",
-        message: `Build result schema budget key is not allowed: ${blockKey}`
-      };
+  const blocks = [];
+  const seen = new Set();
+  const canonicalBlockId = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/;
+  for (const rawBlock of rawSchema.blocks) {
+    if (typeof rawBlock !== "string") {
+      return { ok: false, code: "BUILD_RESULT_SCHEMA_INVALID", message: "Build result schema block IDs must be strings." };
     }
-
-    const numericBudget = Number(budget);
-    if (
-      !Number.isFinite(numericBudget) ||
-      numericBudget <= 0 ||
-      !Number.isInteger(numericBudget)
-    ) {
-      return {
-        ok: false,
-        code: "BUILD_RESULT_SCHEMA_INVALID",
-        message: `Build result schema budget must be a positive integer: ${blockKey}`
-      };
+    const block = safeTrim(rawBlock);
+    if (!block || block !== rawBlock || !canonicalBlockId.test(block) || seen.has(block)) {
+      return { ok: false, code: "BUILD_RESULT_SCHEMA_INVALID", message: `Build result schema block ID is invalid: ${rawBlock}` };
     }
+    seen.add(block);
+    blocks.push(block);
   }
 
   if (
@@ -2733,30 +2752,29 @@ function validateBuildResultSchemaContext(rawSchema) {
     };
   }
 
+  if (Array.isArray(rawSchema.selected_advanced_options)) {
+    const advancedSeen = new Set();
+    for (const option of rawSchema.selected_advanced_options) {
+      if (typeof option !== "string" || !safeTrim(option) || safeTrim(option) !== option || advancedSeen.has(option)) {
+        return { ok: false, code: "BUILD_RESULT_SCHEMA_INVALID", message: "Build result schema selected_advanced_options is invalid." };
+      }
+      advancedSeen.add(option);
+    }
+  }
+
   return { ok: true };
 }
 
 function safeResultSchemaSnapshot(value) {
   const schema = value;
-  const blocks = schema.blocks.map((block) => safeTrim(block)).filter(Boolean);
-  const blockCharacterBudget = {};
-
-  for (const block of blocks) {
-    if (Object.prototype.hasOwnProperty.call(schema.block_character_budget, block)) {
-      blockCharacterBudget[block] = Math.trunc(Number(schema.block_character_budget[block]));
-    }
-  }
-
   return {
-    version: safeTrim(schema.version) || "v1",
-    plan_tier: safeTrim(schema.plan_tier) || "free",
-    video_type: safeTrim(schema.video_type) || "video",
-    density_mode: safeTrim(schema.density_mode) || "compact",
-    text_budget_total: Math.trunc(Number(schema.text_budget_total)),
-    blocks,
-    block_character_budget: blockCharacterBudget,
+    version: safeTrim(schema.version),
+    plan_tier: schema.plan_tier,
+    video_type: schema.video_type,
+    density_mode: schema.density_mode,
+    blocks: [...schema.blocks],
     selected_advanced_options: Array.isArray(schema.selected_advanced_options)
-      ? schema.selected_advanced_options.map((item) => safeTrim(item)).filter(Boolean)
+      ? [...schema.selected_advanced_options]
       : [],
   };
 }
@@ -2765,13 +2783,7 @@ function buildBuildSchemaPrompt(resultSchema, language) {
   const allowedBlocks = Array.isArray(resultSchema.blocks)
     ? resultSchema.blocks
     : [];
-  const compositionLines = allowedBlocks.map((block, index) => {
-    const budget = resultSchema.block_character_budget[block];
-    if (typeof budget === "number" && budget > 0) {
-      return `${index + 1}. ${block} — target_char_budget=${budget}`;
-    }
-    return `${index + 1}. ${block}`;
-  });
+  const compositionLines = allowedBlocks.map((block, index) => `${index + 1}. ${block}`);
 
   if (language === "en") {
     return [
@@ -2780,17 +2792,16 @@ function buildBuildSchemaPrompt(resultSchema, language) {
       `- plan_tier: ${resultSchema.plan_tier}`,
       `- video_type: ${resultSchema.video_type}`,
       `- density_mode: ${resultSchema.density_mode}`,
-      `- text_budget_total: ${resultSchema.text_budget_total}`,
       `- allowed_blocks: ${allowedBlocks.join(", ") || "none"}`,
+      "- Return EXACTLY every block listed in allowed_blocks, no more and no fewer.",
+      "- Every allowed block is required and must be a meaningful non-empty string.",
       "- Any block not listed in allowed_blocks is forbidden.",
       "- expected_result_composition:",
       ...compositionLines,
       "- Return blocks only under blocks.",
       "- Do not add blocks outside allowed_blocks.",
-      "- If a block is not allowed, omit it completely.",
-      "- If one allowed block cannot be generated, omit only that block.",
-      "- If allowed_blocks is non-empty, do not return an empty blocks object.",
-      "- Generate every possible allowed block from the Blueprint."
+      "- Do not omit any allowed block.",
+      "- There are no product character ceilings in this Build contract; preserve useful completeness and quality."
     ].join("\n");
   }
 
@@ -2800,17 +2811,16 @@ function buildBuildSchemaPrompt(resultSchema, language) {
     `- plan_tier: ${resultSchema.plan_tier}`,
     `- video_type: ${resultSchema.video_type}`,
     `- density_mode: ${resultSchema.density_mode}`,
-    `- text_budget_total: ${resultSchema.text_budget_total}`,
     `- allowed_blocks: ${allowedBlocks.join(", ") || "none"}`,
+    "- Верни РОВНО каждый блок из allowed_blocks: не больше и не меньше.",
+    "- Каждый разрешённый блок обязателен и должен быть содержательной непустой строкой.",
     "- Любой блок, которого нет в allowed_blocks, запрещён.",
     "- expected_result_composition:",
     ...compositionLines,
     "- Возвращай блоки только внутри blocks.",
     "- Не добавляй блоки вне allowed_blocks.",
-    "- Если блок не разрешён, полностью пропусти его.",
-    "- Если один разрешённый блок невозможно сгенерировать, пропусти только этот блок.",
-    "- Если allowed_blocks непустой, не возвращай пустой объект blocks.",
-    "- Сгенерируй каждый возможный разрешённый блок из Blueprint."
+    "- Не пропускай ни один разрешённый блок.",
+    "- В этом Build-контракте нет продуктовых лимитов по символам; сохраняй полезную полноту и качество."
   ].join("\n");
 }
 
